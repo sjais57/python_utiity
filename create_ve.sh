@@ -1,135 +1,4 @@
 #!/bin/bash
-set -euo pipefail
-
-cur_timestamp="$(date +%Y/%m/%d_%H:%M:%S)"
-log_timestamp="$(date +%Y%m%d%H%M%S)"
-cur_date="$(date +%Y-%m-%d)"
-
-# Base directories
-PVT_VENV_DIRS="/nas/data/data/${USER}/pyvenv/envs"
-PY_CORE_DIR="/efs/dist/python/core"
-
-# Ensure cfg_fl is initialized
-cfg_fl=0
-
-createPvtEnv() {
-    echo -e "\nFunction to create User private PY Virtual Environment\n"
-
-    # Ensure base venv dir exists
-    mkdir -p "$PVT_VENV_DIRS"
-
-    if [[ ${cfg_fl} -eq 0 ]]; then
-        # Prompt for environment name
-        read -r -p "Please enter the private Virtual Environment name you wish to create. Note: it will be prefixed by pvt_ : " pvtVENname
-        pvtVENname="$(echo "${pvtVENname:-}" | tr '[:upper:]' '[:lower:]')"
-
-        # Validate environment name
-        if [[ -z "${pvtVENname}" ]]; then
-            echo -e "\nError: The private virtual environment name cannot be empty."
-            exit 1
-        fi
-
-        echo
-
-        # Prompt for Python version
-        read -r -p "Please enter the Python version to use (Default to 3.10 if not specified): " pyVersion
-        pyVersion="${pyVersion:-3.10}"
-    fi
-
-    # If exact version dir exists, use it; otherwise list clean subversions (digits only)
-    if [[ -d "${PY_CORE_DIR}/${pyVersion}" ]]; then
-        : # exact match ok
-    else
-        major_minor_version="$(awk -F. '{print $1"."$2}' <<< "$pyVersion")"
-
-        # Only allow folders exactly like: 3.11.<digits> (NO suffix like -build...)
-        # Sort naturally so 3.11.10 comes after 3.11.9
-        mapfile -t subversions < <(
-            find "$PY_CORE_DIR" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' \
-            | grep -E "^${major_minor_version}\.[0-9]+$" \
-            | sort -V
-        )
-
-        if [[ ${#subversions[@]} -eq 0 ]]; then
-            echo -e "\nError: No available versions found for Python ${major_minor_version}. Please install one."
-            exit 1
-        fi
-
-        echo -e "\nThe exact version '${pyVersion}' is not available. Here are the available subversions:"
-        for i in "${!subversions[@]}"; do
-            printf "%d. %s\n" "$((i + 1))" "${subversions[$i]}"
-        done
-
-        while true; do
-            read -r -p "Please select a version by entering the corresponding number: " version_choice
-
-            # Must be an integer
-            if [[ ! "$version_choice" =~ ^[0-9]+$ ]]; then
-                echo "Invalid input. Please enter a number."
-                continue
-            fi
-
-            if (( version_choice >= 1 && version_choice <= ${#subversions[@]} )); then
-                pyVersion="${subversions[$((version_choice - 1))]}"
-                echo -e "\nYou selected Python version: $pyVersion\n"
-                break
-            else
-                echo "Invalid selection. Please choose between 1 and ${#subversions[@]}."
-            fi
-        done
-    fi
-
-    pyExec="${PY_CORE_DIR}/${pyVersion}/bin/python3"
-
-    if [[ ! -x "$pyExec" ]]; then
-        echo -e "\nError: Python executable not found or not executable: $pyExec"
-        exit 1
-    fi
-
-    # Prompt for default packages (optional)
-    read -r -p "Please enter the specific packages to be installed with the VE, each separated by comma. This is optional (Ex: graphviz,matplotlib==3.10.3,plotly): " default_packages
-    default_packages="${default_packages:-}"
-    dfltPkg="$(echo "$default_packages" | tr ',' ' ' | xargs || true)"
-
-    # Final environment directory name
-    pvtVENdir="pvt_${pvtVENname}"
-    venv_path="${PVT_VENV_DIRS}/${pvtVENdir}"
-
-    # Check if env already exists
-    if [[ -d "$venv_path" ]]; then
-        echo -e "\nError: A private environment with the name '$pvtVENdir' already exists at: $venv_path"
-        echo -e "Please try a different name.\n"
-        return 1
-    fi
-
-    echo -e "\nCreating py virtual environment at $PVT_VENV_DIRS using $pyExec\n"
-    "$pyExec" -m venv "$venv_path"
-
-    echo -e "\nActivating virtual environment"
-    # shellcheck disable=SC1090
-    source "$venv_path/bin/activate"
-
-    if [[ -n "$dfltPkg" ]]; then
-        echo -e "\nInstalling packages: $dfltPkg\n"
-        pip install $dfltPkg
-        echo -e "\nPip packages installed successfully.\n"
-    fi
-
-    deactivate
-
-    echo -e "\nSuccessfully created py virtual environment at $venv_path"
-    echo -e "To activate this environment, run: source $venv_path/bin/activate"
-    echo -e "To deactivate, simply run: deactivate\n"
-}
-
-# Call the function
-createPvtEnv
-
-
-
-==============================
-
-#!/bin/bash
 
 cur_timestamp=$(date +%Y/%m/%d_%H:%M:%S)
 log_timestamp=$(date +%Y%m%d%H%M%S)
@@ -204,18 +73,44 @@ function createPvtEnv() {
             IFS=$'\n' sorted_subversions=($(sort -V <<<"${subversions[*]}"))
             unset IFS
             
+            # Create an associative array for quick lookup
+            declare -A version_map
             for i in "${!sorted_subversions[@]}"; do
                 echo "$((i + 1)). ${sorted_subversions[$i]}"
+                version_map[$((i + 1))]="${sorted_subversions[$i]}"
+                version_map["${sorted_subversions[$i]}"]="${sorted_subversions[$i]}"
             done
 
             # Prompt user to select a subversion
-            read -p "Please select a version by entering the corresponding number: " version_choice
-            if [[ $version_choice =~ ^[0-9]+$ ]] && [[ $version_choice -gt 0 && $version_choice -le ${#sorted_subversions[@]} ]]; then
-                pyVersion=${sorted_subversions[$((version_choice - 1))]}
-                echo -e "\nYou selected Python version: $pyVersion\n"
+            echo -e "\nYou can enter either the number (e.g., 1) or the version (e.g., 3.11.12)"
+            read -p "Please select a version by entering the corresponding number or version: " version_choice
+            
+            # Check if input is a number
+            if [[ $version_choice =~ ^[0-9]+$ ]]; then
+                # User entered a number
+                if [[ $version_choice -gt 0 && $version_choice -le ${#sorted_subversions[@]} ]]; then
+                    pyVersion=${version_map[$version_choice]}
+                    echo -e "\nYou selected Python version: $pyVersion\n"
+                else
+                    echo -e "\nInvalid number selection. Please enter a number between 1 and ${#sorted_subversions[@]}."
+                    exit 1
+                fi
             else
-                echo -e "\nInvalid selection. Exiting."
-                exit 1
+                # User entered a version string
+                version_found=false
+                for version in "${sorted_subversions[@]}"; do
+                    if [[ "$version_choice" == "$version" ]]; then
+                        pyVersion="$version_choice"
+                        version_found=true
+                        echo -e "\nYou selected Python version: $pyVersion\n"
+                        break
+                    fi
+                done
+                
+                if [ "$version_found" = false ]; then
+                    echo -e "\nInvalid version selection. '$version_choice' is not in the list of available versions."
+                    exit 1
+                fi
             fi
         fi
     fi

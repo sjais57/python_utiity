@@ -1,0 +1,490 @@
+#!/bin/bash
+
+cur_timestamp=$(date +%Y/%m/%d_%H:%M:%S)
+log_timestamp=$(date +%Y%m%d%H%M%S)
+cur_date=$(date +%Y-%m-%d)
+
+declare pvt_venv_dirs="/nas/data/data/$USER/.pyvenv/envs"
+
+# Ensure cfg_fl is initialized
+cfg_fl=0
+
+############################################
+# Function: selectPythonVersion
+# Description: Checks if Python version exists and allows selection of subversions
+# Usage: selectPythonVersion "initial_version"
+# Returns: Selected Python version via echo
+############################################
+function selectPythonVersion() {
+    local pyVersion="$1"
+    local major_minor_version
+    local subversions=()
+    local clean_subversions=()
+    local sorted_subversions=()
+    local version_choice
+    local version_found=false
+    declare -A version_map
+    
+    # Check if the exact Python version exists
+    ls /efs/dist/python/core/ | grep -Eq "^${pyVersion}$"
+    local st_available_py_version=$?
+    
+    # If the exact version is available, return it
+    if [ $st_available_py_version -eq 0 ]; then
+        echo "$pyVersion"
+        return 0
+    fi
+    
+    # If the exact version is not available, check for subversions
+    major_minor_version=$(echo "$pyVersion" | cut -d'.' -f1,2)
+    
+    # Get all directories and filter for proper version numbers
+    # Using regex to match only X.Y.Z format (where Z can be any number)
+    subversions=($(ls /efs/dist/python/core/ | grep -E "^${major_minor_version}\.[0-9]+$"))
+    
+    # If no exact X.Y.Z versions found, try a more flexible pattern
+    if [ ${#subversions[@]} -eq 0 ]; then
+        subversions=($(ls /efs/dist/python/core/ | grep -E "^${major_minor_version}\.[0-9]+[^[:alpha:]]*$" | grep -vE '.*-.*'))
+    fi
+    
+    # Clean up the list - remove any non-version directories that might have slipped through
+    for version in "${subversions[@]}"; do
+        # Check if it matches the pattern of a version number (X.Y or X.Y.Z)
+        if [[ "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            clean_subversions+=("$version")
+        fi
+    done
+    subversions=("${clean_subversions[@]}")
+    
+    if [ ${#subversions[@]} -eq 0 ]; then
+        echo -e "\nError: No available versions found for Python ${major_minor_version}. Please install one." >&2
+        return 1
+    fi
+    
+    echo -e "\nThe exact version '${pyVersion}' is not available. Here are the available subversions:" >&2
+    # Sort versions numerically
+    IFS=$'\n' sorted_subversions=($(sort -V <<<"${subversions[*]}"))
+    unset IFS
+    
+    # Create an associative array for quick lookup
+    for i in "${!sorted_subversions[@]}"; do
+        echo "$((i + 1)). ${sorted_subversions[$i]}" >&2
+        version_map[$((i + 1))]="${sorted_subversions[$i]}"
+        version_map["${sorted_subversions[$i]}"]="${sorted_subversions[$i]}"
+    done
+
+    # Prompt user to select a subversion
+    echo -e "\nYou can enter either the number (e.g., 1) or the version (e.g., 3.11.12)" >&2
+    read -p "Please select a version by entering the corresponding number or version: " version_choice
+    
+    # Check if input is a number
+    if [[ $version_choice =~ ^[0-9]+$ ]]; then
+        # User entered a number
+        if [[ $version_choice -gt 0 && $version_choice -le ${#sorted_subversions[@]} ]]; then
+            echo "${version_map[$version_choice]}"
+            return 0
+        else
+            echo -e "\nInvalid number selection. Please enter a number between 1 and ${#sorted_subversions[@]}." >&2
+            return 1
+        fi
+    else
+        # User entered a version string
+        for version in "${sorted_subversions[@]}"; do
+            if [[ "$version_choice" == "$version" ]]; then
+                echo "$version_choice"
+                return 0
+            fi
+        done
+        
+        echo -e "\nInvalid version selection. '$version_choice' is not in the list of available versions." >&2
+        return 1
+    fi
+}
+
+############################################
+# Function: validatePythonVersion
+# Description: Validates if a Python version exists
+# Usage: validatePythonVersion "version"
+# Returns: 0 if exists, 1 if not exists
+############################################
+function validatePythonVersion() {
+    local pyVersion="$1"
+    
+    # Check if the exact Python version exists
+    ls /efs/dist/python/core/ | grep -Eq "^${pyVersion}$"
+    local st_available=$?
+    
+    # If exact version doesn't exist, check if it's a valid major.minor
+    if [ $st_available -ne 0 ]; then
+        local major_minor_version=$(echo "$pyVersion" | cut -d'.' -f1,2)
+        local subversions=($(ls /efs/dist/python/core/ | grep -E "^${major_minor_version}\.[0-9]+$"))
+        
+        if [ ${#subversions[@]} -eq 0 ]; then
+            # Try a more flexible pattern
+            subversions=($(ls /efs/dist/python/core/ | grep -E "^${major_minor_version}\.[0-9]+[^[:alpha:]]*$" | grep -vE '.*-.*'))
+            
+            # Clean up the list
+            local clean_subversions=()
+            for version in "${subversions[@]}"; do
+                if [[ "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+                    clean_subversions+=("$version")
+                fi
+            done
+            
+            if [ ${#clean_subversions[@]} -eq 0 ]; then
+                return 1
+            fi
+        fi
+    fi
+    
+    return 0
+}
+
+############################################
+# Function: createPvtEnv
+############################################
+function createPvtEnv() {
+
+    # Set log file in the user's home directory
+    echo -e "\nFunction to create User private PY Virtual Environment\n"
+
+    if [ $cfg_fl -eq 0 ]; then
+
+        # Prompt for environment name
+        read -p "Please enter the private Virtual Environment name you wish to create. Note: it will be prefixed by pvt_ : " pvtVENname
+        pvtVENname=$(echo "$pvtVENname" | tr '[:upper:]' '[:lower:]')
+
+        # Validate environment name
+        if [ -z "$pvtVENname" ]; then
+            echo -e "\nError: The private virtual environment name cannot be empty."
+            exit 1
+        fi
+
+        echo -e "\n"
+
+        # Prompt for Python version
+        read -p "Please enter the Python version to use (Default to 3.10.12 if not specified): " pyVersion
+
+        # Validate Python version
+        if [ -z "$pyVersion" ]; then
+            pyVersion="3.10.12"
+        fi
+    fi
+
+    # Use the reusable function to select Python version
+    selected_version=$(selectPythonVersion "$pyVersion")
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
+    pyVersion="$selected_version"
+
+    pyExec="/efs/dist/python/core/${pyVersion}/exec/bin/python3"
+
+    # Prompt for default packages
+    read -p "Please enter the specific packages to be installed with the VE, each separated by comma. This is optional (Ex: graphviz,matplotlib==3.10.12.3,plotly): " default_packages
+
+    dfltPkg=$(echo "$default_packages" | tr "," " ")
+
+    # Check if env already exists
+    ls "$pvt_venv_dirs" | tr " " "\n" | grep -Eq "^pvt_${pvtVENname}$"
+    st_available_pvt_envs=$?
+
+    if [ $st_available_pvt_envs -ne 0 ]; then
+        pvtVENname="pvt_${pvtVENname}"
+        echo -e "\nCreating py virtual environment at $pvt_venv_dirs using $pyExec\n"
+        $pyExec -m venv "$pvt_venv_dirs/$pvtVENname"
+
+        if [ $? -eq 0 ]; then
+            echo -e "\nActivating virtual environment and installing packages: $dfltPkg\n"
+            source "$pvt_venv_dirs/$pvtVENname/bin/activate"
+
+            if [ ! -z "$dfltPkg" ]; then
+                pip install $dfltPkg
+                pip_status=$?
+
+                if [ $pip_status -eq 0 ]; then
+                    echo -e "\nPip packages installed successfully.\n"
+                else
+                    echo -e "\nError: Pip installation failed with status code $pip_status.\n"
+                    return 1
+                fi
+            fi
+        else
+            echo -e "\nPip virtual environment creation failed.\n"
+            return 1
+        fi
+    else
+        echo -e "\nError: A private environment with the name '$pvtVENname' already exists. Please try a different name.\n"
+        return 1
+    fi
+
+    deactivate
+
+    echo -e "\nSuccessfully created py virtual environment at $pvt_venv_dirs/$pvtVENname"
+    echo -e "To activate this environment, run: source $pvt_venv_dirs/$pvtVENname/bin/activate"
+    echo -e "To deactivate, simply run: deactivate\n"
+}
+
+############################################
+# Function: createSpecPvtEnv
+############################################
+function createSpecPvtEnv() {
+    echo -e "\nFunction to create User private Python Virtual Environment using spec file\n"
+
+    if [ $cfg_fl -eq 0 ]; then
+        read -p "Please enter the private Virtual Environment Name you wish to create. Note: it will be prefixed by 'pvt_' : " pvtVEName
+        pvtVEName=$(echo "$pvtVEName" | tr '[:upper:]' '[:lower:]')
+        
+        # Validate environment name
+        if [ -z "$pvtVEName" ]; then
+            echo -e "\nError: The private virtual environment name cannot be empty."
+            exit 1
+        fi
+        
+        echo -e "\n"
+        read -p "Please enter the Python version to use (Default to 3.10.12 if not specified): " pyVersion
+
+        # Validate Python version
+        if [ -z "$pyVersion" ]; then
+            pyVersion="3.10.12"
+        fi
+        
+        echo -e "\n"
+        read -p "Please enter the requirements file name with complete path to create the pvt VE. Ex- /nas-path/requirements.txt : " specFileName
+        echo -e "\n"
+    fi
+
+    # Use the reusable function to select Python version
+    selected_version=$(selectPythonVersion "$pyVersion")
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
+    pyVersion="$selected_version"
+
+    pyExec="/efs/dist/python/core/${pyVersion}/exec/bin/python3"
+
+    # Check if env already exists
+    ls "$pvt_venv_dirs" | tr " " "\n" | grep -Eq "^pvt_${pvtVEName}$"
+    st_available_pvt_envs=$?
+
+    if [ -f "$specFileName" ] && [ ! -z "$pvtVEName" ] && [ $st_available_pvt_envs -ne 0 ]; then
+        pvtVEName="pvt_${pvtVEName}"
+        echo -e "\nCreating User private Python Virtual Environment $pvtVEName using requirements file: $specFileName\n"
+
+        # Create virtual environment
+        $pyExec -m venv "$pvt_venv_dirs/$pvtVEName"
+        if [ $? -ne 0 ]; then
+            echo -e "\nFailed to create Python virtual environment."
+            return 1
+        fi
+
+        echo -e "\nActivating virtual environment and installing packages from requirements file\n"
+        source "$pvt_venv_dirs/$pvtVEName/bin/activate"
+
+        # Install packages from requirements file
+        if [ -f "$specFileName" ]; then
+            pip install -r "$specFileName"
+            pip_status=$?
+
+            if [ $pip_status -eq 0 ]; then
+                echo -e "\nPackages installed successfully from requirements file.\n"
+            else
+                echo -e "\nError: Pip installation failed with status code $pip_status.\n"
+                deactivate
+                return 1
+            fi
+        else
+            echo -e "\nError: Requirements file not found: $specFileName\n"
+            deactivate
+            return 1
+        fi
+
+        deactivate
+
+        # Create activation/deactivation scripts for JAVA_HOME if needed
+        pvtVEProfileActivatePath="$pvt_venv_dirs/$pvtVEName/etc/conda/activate.d"
+        pvtVEProfileDeactivatePath="$pvt_venv_dirs/$pvtVEName/etc/conda/deactivate.d"
+
+        if [ ! -d "$pvtVEProfileActivatePath" ]; then
+            mkdir -p "$pvtVEProfileActivatePath"
+        fi
+        if [ ! -d "$pvtVEProfileDeactivatePath" ]; then
+            mkdir -p "$pvtVEProfileDeactivatePath"
+        fi
+
+        echo -e "\nSetting JAVA_HOME for $pvtVEName : $pvtVEProfileActivatePath/zopenjdk_activate.sh"
+        echo -e "export CONDA_BACKUP_JAVA_HOME=\${JAVA_HOME}\n\
+export JAVA_HOME=\${CONDA_JAVA_HOME:-/usr/lib/jvm/java-11-openjdk}\n\
+export CONDA_BACKUP_JAVA_LD_LIBRARY_PATH=\${JAVA_LD_LIBRARY_PATH}\n\
+export JAVA_LD_LIBRARY_PATH=\${JAVA_HOME}/lib/server" \
+> "$pvtVEProfileActivatePath/zopenjdk_activate.sh"
+
+        echo -e "\nUnsetting JAVA_HOME for $pvtVEName : $pvtVEProfileDeactivatePath/zopenjdk_deactivate.sh"
+        echo -e "export JAVA_HOME=\${CONDA_BACKUP_JAVA_HOME}\n\
+unset CONDA_BACKUP_JAVA_HOME\n\
+export JAVA_LD_LIBRARY_PATH=\${CONDA_BACKUP_JAVA_LD_LIBRARY_PATH}\n\
+unset CONDA_BACKUP_JAVA_LD_LIBRARY_PATH" \
+> "$pvtVEProfileDeactivatePath/zopenjdk_deactivate.sh"
+
+        chmod 700 "$pvtVEProfileActivatePath/zopenjdk_activate.sh"
+        chmod 700 "$pvtVEProfileDeactivatePath/zopenjdk_deactivate.sh"
+
+        echo -e "\nSuccessfully created $pvtVEName\n"
+        echo -e "To activate this environment, run: source $pvt_venv_dirs/$pvtVEName/bin/activate"
+        echo -e "To deactivate, simply run: deactivate\n"
+
+    elif [ -z "$pvtVEName" ]; then
+        echo -e "\nError: Empty pvt VE Name\n"
+
+    elif [ ! -f "$specFileName" ]; then
+        echo -e "\nError: Requirements file - $specFileName does not exist. Please provide the complete path, ex: /home/user/requirements.txt\n"
+
+    elif [ $st_available_pvt_envs -eq 0 ]; then
+        echo -e "\nError: Pvt VE name - pvt_${pvtVEName} already exists. Please try a different Name.\n"
+    fi
+}
+
+############################################
+# Function: createSpecPrjEnv
+############################################
+function createSpecPrjEnv() {
+    echo -e "\nFunction to create User Project Python Virtual Environment using spec file\n"
+
+    # Set project environment directory
+    declare prj_venv_dirs="/nas/data/data/projects/pyvenv/envs"
+
+    if [ $cfg_fl -eq 0 ]; then
+        read -p "Please enter the project Virtual Environment Name you wish to create. Note: it will be prefixed by 'prj_' : " prjVEName
+        prjVEName=$(echo "$prjVEName" | tr '[:upper:]' '[:lower:]')
+        
+        # Validate environment name
+        if [ -z "$prjVEName" ]; then
+            echo -e "\nError: The project virtual environment name cannot be empty."
+            exit 1
+        fi
+        
+        echo -e "\n"
+        read -p "Please enter the Python version to use (Default to 3.10.12 if not specified): " pyVersion
+
+        # Validate Python version
+        if [ -z "$pyVersion" ]; then
+            pyVersion="3.10.12"
+        fi
+        
+        echo -e "\n"
+        read -p "Please enter the requirements file name with complete path to create the project VE. Ex- /nas-path/requirements.txt : " specFileName
+        echo -e "\n"
+        read -p "Please enter the group Name which will own the Virtual Environment $prjVEName: " grpName
+        echo -e "\n"
+    fi
+
+    # Use the reusable function to select Python version
+    selected_version=$(selectPythonVersion "$pyVersion")
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
+    pyVersion="$selected_version"
+
+    pyExec="/efs/dist/python/core/${pyVersion}/exec/bin/python3"
+
+    # Check if env already exists
+    ls "$prj_venv_dirs" | tr " " "\n" | grep -Eq "^prj_${prjVEName}$"
+    st_available_prj_envs=$?
+
+    getent group "$grpName" | grep -oq "$grpName"
+    st_grp=$?
+
+    if [ $st_grp -ne 0 ]; then
+        echo -e "\nInvalid group Name: $grpName\n"
+    else
+        if [ -f "$specFileName" ] && [ ! -z "$prjVEName" ] && [ $st_available_prj_envs -ne 0 ]; then
+            prjVEName="prj_${prjVEName}"
+            
+            echo -e "\nCreating project Python Virtual Environment $prj_venv_dirs/$prjVEName using requirements file: $specFileName\n"
+
+            # Create virtual environment
+            $pyExec -m venv "$prj_venv_dirs/$prjVEName"
+            if [ $? -ne 0 ]; then
+                echo -e "\nFailed to create Python virtual environment."
+                return 1
+            fi
+
+            echo -e "\nActivating virtual environment and installing packages from requirements file\n"
+            source "$prj_venv_dirs/$prjVEName/bin/activate"
+
+            # Install packages from requirements file
+            if [ -f "$specFileName" ]; then
+                pip install -r "$specFileName"
+                pip_status=$?
+
+                if [ $pip_status -eq 0 ]; then
+                    echo -e "\nPackages installed successfully from requirements file.\n"
+                else
+                    echo -e "\nError: Pip installation failed with status code $pip_status.\n"
+                    deactivate
+                    return 1
+                fi
+            else
+                echo -e "\nError: Requirements file not found: $specFileName\n"
+                deactivate
+                return 1
+            fi
+
+            deactivate
+
+            # Create activation/deactivation scripts for JAVA_HOME if needed
+            prjVEProfileActivatePath="$prj_venv_dirs/$prjVEName/etc/conda/activate.d"
+            prjVEProfileDeactivatePath="$prj_venv_dirs/$prjVEName/etc/conda/deactivate.d"
+
+            if [ ! -d "$prjVEProfileActivatePath" ]; then
+                mkdir -p "$prjVEProfileActivatePath"
+            fi
+            if [ ! -d "$prjVEProfileDeactivatePath" ]; then
+                mkdir -p "$prjVEProfileDeactivatePath"
+            fi
+
+            echo -e "\nSetting JAVA_HOME for $prjVEName : $prjVEProfileActivatePath/zopenjdk_activate.sh"
+            echo -e "export CONDA_BACKUP_JAVA_HOME=\${JAVA_HOME}\n\
+export JAVA_HOME=\${CONDA_JAVA_HOME:-/usr/lib/jvm/java-11-openjdk}\n\
+export CONDA_BACKUP_JAVA_LD_LIBRARY_PATH=\${JAVA_LD_LIBRARY_PATH}\n\
+export JAVA_LD_LIBRARY_PATH=\${JAVA_HOME}/lib/server" \
+> "$prjVEProfileActivatePath/zopenjdk_activate.sh"
+
+            echo -e "\nUnsetting JAVA_HOME for $prjVEName : $prjVEProfileDeactivatePath/zopenjdk_deactivate.sh"
+            echo -e "export JAVA_HOME=\${CONDA_BACKUP_JAVA_HOME}\n\
+unset CONDA_BACKUP_JAVA_HOME\n\
+export JAVA_LD_LIBRARY_PATH=\${CONDA_BACKUP_JAVA_LD_LIBRARY_PATH}\n\
+unset CONDA_BACKUP_JAVA_LD_LIBRARY_PATH" \
+> "$prjVEProfileDeactivatePath/zopenjdk_deactivate.sh"
+
+            chmod 700 "$prjVEProfileActivatePath/zopenjdk_activate.sh"
+            chmod 700 "$prjVEProfileDeactivatePath/zopenjdk_deactivate.sh"
+
+            echo -e "\nSuccessfully created $prj_venv_dirs/$prjVEName\n"
+            
+            echo -e "\nChanging group ownership of the VE $prj_venv_dirs/$prjVEName to : $grpName\n"
+            chgrp -R "$grpName" "$prj_venv_dirs/$prjVEName"
+
+            echo -e "\nChanging default ownership of all files of the VE $prj_venv_dirs/$prjVEName to : $grpName\n"
+            chmod -R g+rs "$prj_venv_dirs/$prjVEName"
+            chmod -R ug+rwx "$prj_venv_dirs/$prjVEName"
+
+            echo -e "\nTo activate this environment, run: source $prj_venv_dirs/$prjVEName/bin/activate"
+            echo -e "To deactivate, simply run: deactivate\n"
+
+        elif [ -z "$prjVEName" ]; then
+            echo -e "\nError: Empty project VE Name\n"
+
+        elif [ ! -f "$specFileName" ]; then
+            echo -e "\nError: Requirements file - $specFileName does not exist. Please provide the complete path - ex:/home/user/requirements.txt\n"
+
+        elif [ $st_available_prj_envs -eq 0 ]; then
+            echo -e "\nError: Project VE name - prj_${prjVEName} already exists. Please try a different Name.\n"
+        fi
+    fi
+}
+
+# Call the function
+# createPvtEnv
+# createSpecPvtEnv
+# createSpecPrjEnv

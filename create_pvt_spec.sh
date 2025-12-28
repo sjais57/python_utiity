@@ -135,17 +135,23 @@ function createSpecPvtEnv() {
         source "$pvt_venv_dirs/$pvtVEName/bin/activate"
 
         # Install packages from requirements file
+        # Install packages from requirements file
         if [ -f "$specFileName" ]; then
             echo -e "Installing packages from: $specFileName\n"
             pip install -r "$specFileName"
             pip_status=$?
-
+        
             if [ $pip_status -eq 0 ]; then
-                echo -e "\n✓ Packages installed successfully from requirements file.\n"
+                echo -e "\n✓ All packages installed successfully from requirements file.\n"
             else
-                echo -e "\n✗ Error: Pip installation failed with status code $pip_status.\n"
-                deactivate
-                return 1
+                echo -e "\n⚠ Warning: Some packages failed to install (exit code: $pip_status).\n"
+                echo -e "The virtual environment was created successfully, but you may need to:"
+                echo -e "1. Check the error messages above"
+                echo -e "2. Fix the requirements file"
+                echo -e "3. Manually install missing packages:"
+                echo -e "   source $pvt_venv_dirs/$pvtVEName/bin/activate"
+                echo -e "   pip install <package_name>"
+                echo -e "   deactivate\n"
             fi
         else
             echo -e "\n✗ Error: Requirements file not found: $specFileName\n"
@@ -153,43 +159,15 @@ function createSpecPvtEnv() {
             deactivate
             return 1
         fi
-
+        
         deactivate
-
-        # Create activation script for JAVA_HOME if needed (optional - remove if not needed)
-        # For venv, we can create an activation script in the bin/activate.d directory
-        pvtVEActivateDir="$pvt_venv_dirs/$pvtVEName/bin/activate.d"
-        pvtVEDeactivateDir="$pvt_venv_dirs/$pvtVEName/bin/deactivate.d"
         
-        if [ ! -d "$pvtVEActivateDir" ]; then
-            mkdir -p "$pvtVEActivateDir"
-        fi
-        if [ ! -d "$pvtVEDeactivateDir" ]; then
-            mkdir -p "$pvtVEDeactivateDir"
-        fi
-
-        # Create JAVA_HOME scripts (optional - only if Java is needed)
-        echo -e "\nCreating JAVA_HOME environment scripts (optional)..."
-        
-        echo -e "export VENV_BACKUP_JAVA_HOME=\${JAVA_HOME:-}\n\
-export JAVA_HOME=\${VENV_JAVA_HOME:-\${JAVA_HOME:-/usr/lib/jvm/java-11-openjdk}}\n\
-export VENV_BACKUP_JAVA_LD_LIBRARY_PATH=\${JAVA_LD_LIBRARY_PATH:-}\n\
-export JAVA_LD_LIBRARY_PATH=\${JAVA_HOME}/lib/server" \
-> "$pvtVEActivateDir/java_env.sh"
-
-        echo -e "export JAVA_HOME=\${VENV_BACKUP_JAVA_HOME}\n\
-unset VENV_BACKUP_JAVA_HOME\n\
-export JAVA_LD_LIBRARY_PATH=\${VENV_BACKUP_JAVA_LD_LIBRARY_PATH}\n\
-unset VENV_BACKUP_JAVA_LD_LIBRARY_PATH" \
-> "$pvtVEDeactivateDir/java_env.sh"
-
-        chmod 755 "$pvtVEActivateDir/java_env.sh"
-        chmod 755 "$pvtVEDeactivateDir/java_env.sh"
-
-        echo -e "\n✓ Successfully created virtual environment: $pvtVEName\n"
+        echo -e "\n✓ Virtual environment created successfully: $pvtVEName\n"
         echo -e "Location: $pvt_venv_dirs/$pvtVEName"
         echo -e "Python version: $pyVersion"
-        echo -e "Packages installed from: $specFileName"
+        if [ -f "$specFileName" ]; then
+            echo -e "Requirements file: $specFileName"
+        fi
         echo -e "\nTo activate this environment, run:"
         echo -e "  source $pvt_venv_dirs/$pvtVEName/bin/activate"
         echo -e "\nTo deactivate, run:"

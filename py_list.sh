@@ -62,53 +62,71 @@ _pyenv_list() {
     local env_count=0
     local current_env_path="$VIRTUAL_ENV"
     
-    # Create an array to store all found environments with their paths
-    declare -A env_map
-    declare -a env_paths
+    # Create arrays to store environments
+    declare -a all_envs
     
-    # Collect all environments
+    # Collect all environments from all directories
     for dir in "${VENV_DIRS[@]}"; do
         if [ -d "$dir" ]; then
-            # Find all virtual environments
-            find "$dir" -maxdepth 2 -type f \( -name "activate" -o -name "pyvenv.cfg" \) 2>/dev/null | \
-            while read -r file; do
-                if [[ "$file" == *"activate" ]]; then
-                    env_path=$(dirname "$(dirname "$file")")
-                else
-                    env_path=$(dirname "$file")
+            # Check each subdirectory in the venv directory
+            for item in "$dir"/*; do
+                if [ -d "$item" ]; then
+                    # Check if it's a virtual environment by looking for activate script or pyvenv.cfg
+                    if [ -f "$item/bin/activate" ] || [ -f "$item/pyvenv.cfg" ]; then
+                        env_name=$(basename "$item")
+                        env_path=$(realpath "$item")
+                        all_envs+=("$env_name:$env_path")
+                        ((env_count++))
+                    fi
                 fi
-                
-                env_name=$(basename "$env_path")
-                env_map["$env_path"]="$env_name"
-                env_paths+=("$env_path")
-                ((env_count++))
             done
         fi
     done
     
-    # Sort environments by name
-    IFS=$'\n' sorted_paths=($(sort -t/ -k2 <<<"${env_paths[*]}"))
-    unset IFS
+    # Also check for virtual environments directly in current directory structure
+    if [ -d "./venv" ] && { [ -f "./venv/bin/activate" ] || [ -f "./venv/pyvenv.cfg" ]; }; then
+        env_name="venv"
+        env_path=$(realpath "./venv")
+        all_envs+=("$env_name:$env_path")
+        ((env_count++))
+    fi
     
     # Print header similar to conda
     printf "%-30s %s\n" "Environment" "Location"
     printf "%-30s %s\n" "-----------" "--------"
     
-    # Print all environments
-    for env_path in "${sorted_paths[@]}"; do
-        local env_name="${env_map[$env_path]}"
+    # Sort and display environments
+    if [ ${#all_envs[@]} -gt 0 ]; then
+        # Sort environments by name
+        IFS=$'\n' sorted_envs=($(sort <<<"${all_envs[*]}"))
+        unset IFS
         
-        # Check if this environment is currently active
-        if [ -n "$current_env_path" ] && [ "$(realpath "$current_env_path")" = "$(realpath "$env_path")" ]; then
-            printf "${GREEN}%-30s${NC} ${CYAN}%s${NC}\n" "$env_name" "$env_path"
-        else
-            printf "%-30s %s\n" "$env_name" "$env_path"
-        fi
-    done
+        # Display each environment
+        for env in "${sorted_envs[@]}"; do
+            env_name="${env%%:*}"
+            env_path="${env#*:}"
+            
+            # Check if this environment is currently active
+            if [ -n "$current_env_path" ] && [ "$(realpath "$current_env_path")" = "$env_path" ]; then
+                printf "${GREEN}%s${NC} ${CYAN}%s${NC}\n" "$env_name" "$env_path"
+            else
+                printf "%-30s %s\n" "$env_name" "$env_path"
+            fi
+        done
+    fi
     
     if [ $env_count -eq 0 ]; then
-        echo -e "\n${YELLOW}No virtual environments found in configured directories.${NC}"
-        echo -e "${YELLOW}Configure VENV_DIRS array at the top of this script.${NC}"
+        echo -e "\n${YELLOW}No virtual environments found.${NC}"
+        echo -e "${YELLOW}Configured search directories:${NC}"
+        for dir in "${VENV_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+                echo -e "  ${GREEN}✓${NC} $dir"
+            else
+                echo -e "  ${YELLOW}✗${NC} $dir (not found)"
+            fi
+        done
+        echo -e "\n${YELLOW}You can create a virtual environment with:${NC}"
+        echo "  python -m venv /path/to/your/venv"
     else
         echo -e "\n${BLUE}Total environments found: $env_count${NC}"
         if [ -n "$current_env_path" ]; then
@@ -136,6 +154,7 @@ _pyenv_activate() {
             # Check if it's a valid virtual environment
             if [ ! -f "$env_path/bin/activate" ] && [ ! -f "$env_path/pyvenv.cfg" ]; then
                 echo -e "${RED}Error: '$target' is not a valid virtual environment${NC}"
+                echo "A virtual environment should have either bin/activate or pyvenv.cfg"
                 return 1
             fi
         else
@@ -145,17 +164,29 @@ _pyenv_activate() {
     else
         # Target is a name, search for it in configured directories
         for dir in "${VENV_DIRS[@]}"; do
-            if [ -d "$dir/$target" ]; then
-                env_path="$dir/$target"
-                break
+            if [ -d "$dir" ] && [ -d "$dir/$target" ]; then
+                # Verify it's actually a virtual environment
+                if [ -f "$dir/$target/bin/activate" ] || [ -f "$dir/$target/pyvenv.cfg" ]; then
+                    env_path="$dir/$target"
+                    break
+                fi
             fi
         done
+        
+        # Also check if it's a venv in current directory
+        if [ -z "$env_path" ] && [ "$target" = "venv" ] && [ -d "./venv" ]; then
+            if [ -f "./venv/bin/activate" ] || [ -f "./venv/pyvenv.cfg" ]; then
+                env_path=$(realpath "./venv")
+            fi
+        fi
         
         if [ -z "$env_path" ]; then
             echo -e "${RED}Error: Environment '$target' not found${NC}"
             echo -e "${YELLOW}Searching in:${NC}"
             for dir in "${VENV_DIRS[@]}"; do
-                echo "  $dir"
+                if [ -d "$dir" ]; then
+                    echo "  $dir"
+                fi
             done
             echo -e "\n${YELLOW}You can also activate by providing the full path:${NC}"
             echo "  pyenv activate /path/to/your/venv"
@@ -177,11 +208,20 @@ _pyenv_activate() {
     # Activate the environment
     if [ -f "$env_path/bin/activate" ]; then
         source "$env_path/bin/activate"
-        echo -e "${GREEN}Activated environment: $(basename "$env_path")${NC}"
-        echo -e "${CYAN}Python: $(python --version 2>&1)${NC}"
-        echo -e "${CYAN}Path: $env_path${NC}"
+        echo -e "${GREEN}✓ Activated environment: $(basename "$env_path")${NC}"
+        echo -e "${CYAN}  Python: $(python --version 2>&1)${NC}"
+        echo -e "${CYAN}  Path: $env_path${NC}"
+    elif [ -f "$env_path/Scripts/activate" ]; then
+        # For Windows-style virtual environments (if running in Git Bash/Cygwin)
+        source "$env_path/Scripts/activate"
+        echo -e "${GREEN}✓ Activated environment: $(basename "$env_path")${NC}"
+        echo -e "${CYAN}  Python: $(python --version 2>&1)${NC}"
+        echo -e "${CYAN}  Path: $env_path${NC}"
     else
-        echo -e "${RED}Error: Cannot activate '$(basename "$env_path")' - activate script not found${NC}"
+        echo -e "${RED}Error: Cannot activate '$(basename "$env_path")' - no activate script found${NC}"
+        echo "Looked for:"
+        echo "  $env_path/bin/activate"
+        echo "  $env_path/Scripts/activate"
         return 1
     fi
 }
@@ -195,9 +235,16 @@ _pyenv_deactivate() {
     
     local current_env="${VIRTUAL_ENV##*/}"
     local current_path="$VIRTUAL_ENV"
-    deactivate
-    echo -e "${GREEN}Deactivated environment: $current_env${NC}"
-    echo -e "${CYAN}Path: $current_path${NC}"
+    
+    # Check if we're in a virtual environment before deactivating
+    if command -v deactivate >/dev/null 2>&1; then
+        deactivate
+        echo -e "${GREEN}✓ Deactivated environment: $current_env${NC}"
+        echo -e "${CYAN}  Path: $current_path${NC}"
+    else
+        echo -e "${YELLOW}Not in a virtual environment${NC}"
+        unset VIRTUAL_ENV
+    fi
 }
 
 # Internal function to remove a virtual environment
@@ -218,21 +265,10 @@ _pyenv_remove() {
         if [ -d "$target" ]; then
             env_path=$(realpath "$target")
             env_name=$(basename "$env_path")
-            # Verify it's in one of our search directories
-            local found_in_search_dirs=false
-            for dir in "${VENV_DIRS[@]}"; do
-                if [[ "$env_path" == "$dir"* ]] && [ -d "$dir" ]; then
-                    found_in_search_dirs=true
-                    break
-                fi
-            done
-            
-            if [ "$found_in_search_dirs" = false ]; then
-                echo -e "${YELLOW}Warning: '$target' is not in configured search directories${NC}"
-                echo -e "${YELLOW}Configured directories:${NC}"
-                for dir in "${VENV_DIRS[@]}"; do
-                    echo "  $dir"
-                done
+            # Verify it's a virtual environment
+            if [ ! -f "$env_path/bin/activate" ] && [ ! -f "$env_path/pyvenv.cfg" ]; then
+                echo -e "${RED}Error: '$target' is not a valid virtual environment${NC}"
+                return 1
             fi
         else
             echo -e "${RED}Error: Path '$target' not found${NC}"
@@ -241,12 +277,22 @@ _pyenv_remove() {
     else
         # Target is a name, search for it
         for dir in "${VENV_DIRS[@]}"; do
-            if [ -d "$dir/$target" ]; then
-                env_path="$dir/$target"
-                env_name="$target"
-                break
+            if [ -d "$dir" ] && [ -d "$dir/$target" ]; then
+                if [ -f "$dir/$target/bin/activate" ] || [ -f "$dir/$target/pyvenv.cfg" ]; then
+                    env_path="$dir/$target"
+                    env_name="$target"
+                    break
+                fi
             fi
         done
+        
+        # Also check if it's a venv in current directory
+        if [ -z "$env_path" ] && [ "$target" = "venv" ] && [ -d "./venv" ]; then
+            if [ -f "./venv/bin/activate" ] || [ -f "./venv/pyvenv.cfg" ]; then
+                env_path=$(realpath "./venv")
+                env_name="venv"
+            fi
+        fi
         
         if [ -z "$env_path" ]; then
             echo -e "${RED}Error: Environment '$target' not found${NC}"
@@ -271,9 +317,10 @@ _pyenv_remove() {
     fi
     
     if rm -rf "$env_path"; then
-        echo -e "${GREEN}Successfully removed environment: $env_name${NC}"
+        echo -e "${GREEN}✓ Successfully removed environment: $env_name${NC}"
     else
         echo -e "${RED}Error: Failed to remove environment${NC}"
+        echo "You may need to use 'sudo' if you don't have write permissions"
         return 1
     fi
 }
@@ -309,15 +356,6 @@ _pyenv_help() {
 _pyenv_init() {
     echo -e "${BLUE}PyEnv Manager Initialized${NC}"
     echo "========================"
-    echo "Configured search directories:"
-    for dir in "${VENV_DIRS[@]}"; do
-        if [ -d "$dir" ]; then
-            echo -e "  ${GREEN}✓${NC} $dir"
-        else
-            echo -e "  ${YELLOW}✗${NC} $dir (not found)"
-        fi
-    done
-    echo ""
     echo "Type 'pyenv help' for available commands"
     echo ""
 }

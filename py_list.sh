@@ -20,6 +20,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
 NC='\033[0m' # No Color
 
 # Function to list all virtual environments
@@ -38,6 +39,9 @@ pyenv() {
             ;;
         remove)
             _pyenv_remove "$2"
+            ;;
+        packages|pkgs)
+            _pyenv_packages "$2"
             ;;
         help|--help|-h)
             _pyenv_help
@@ -133,6 +137,146 @@ _pyenv_list() {
             echo -e "${GREEN}Current active environment: $(basename "$current_env_path")${NC}"
         fi
     fi
+}
+
+# Internal function to list packages in a virtual environment without activating it
+_pyenv_packages() {
+    if [ -z "$1" ]; then
+        echo -e "${RED}Error: Please specify environment name or path${NC}"
+        echo "Usage: pyenv packages <environment_name_or_path>"
+        echo "       pyenv pkgs <environment_name_or_path>"
+        return 1
+    fi
+    
+    local target="$1"
+    local env_path=""
+    local env_name=""
+    
+    # Check if target is a path
+    if [[ "$target" == */* ]] || [[ "$target" == .* ]] || [[ "$target" == /* ]]; then
+        # Target looks like a path
+        if [ -d "$target" ]; then
+            env_path=$(realpath "$target")
+            env_name=$(basename "$env_path")
+            # Verify it's a virtual environment
+            if [ ! -f "$env_path/bin/activate" ] && [ ! -f "$env_path/pyvenv.cfg" ]; then
+                echo -e "${RED}Error: '$target' is not a valid virtual environment${NC}"
+                return 1
+            fi
+        else
+            echo -e "${RED}Error: Path '$target' not found${NC}"
+            return 1
+        fi
+    else
+        # Target is a name, search for it
+        for dir in "${VENV_DIRS[@]}"; do
+            if [ -d "$dir" ] && [ -d "$dir/$target" ]; then
+                if [ -f "$dir/$target/bin/activate" ] || [ -f "$dir/$target/pyvenv.cfg" ]; then
+                    env_path="$dir/$target"
+                    env_name="$target"
+                    break
+                fi
+            fi
+        done
+        
+        # Also check if it's a venv in current directory
+        if [ -z "$env_path" ] && [ "$target" = "venv" ] && [ -d "./venv" ]; then
+            if [ -f "./venv/bin/activate" ] || [ -f "./venv/pyvenv.cfg" ]; then
+                env_path=$(realpath "./venv")
+                env_name="venv"
+            fi
+        fi
+        
+        if [ -z "$env_path" ]; then
+            echo -e "${RED}Error: Environment '$target' not found${NC}"
+            return 1
+        fi
+    fi
+    
+    # Check if the environment has a python interpreter
+    local python_bin="$env_path/bin/python"
+    if [ ! -f "$python_bin" ]; then
+        # Try alternative locations
+        python_bin="$env_path/bin/python3"
+        if [ ! -f "$python_bin" ]; then
+            python_bin="$env_path/Scripts/python.exe"  # Windows
+            if [ ! -f "$python_bin" ]; then
+                echo -e "${RED}Error: Python interpreter not found in environment${NC}"
+                return 1
+            fi
+        fi
+    fi
+    
+    echo -e "${PURPLE}Packages in environment: ${CYAN}$env_name${NC}"
+    echo -e "${PURPLE}Path: ${CYAN}$env_path${NC}"
+    echo ""
+    
+    # Get Python version
+    local python_version
+    python_version=$("$python_bin" --version 2>&1)
+    echo -e "${BLUE}Python: ${CYAN}$python_version${NC}"
+    
+    # Try to get pip list
+    echo -e "\n${BLUE}Installed packages:${NC}"
+    echo "-----------------"
+    
+    # Check if pip is available
+    local pip_cmd
+    if [ -f "$env_path/bin/pip" ]; then
+        pip_cmd="$env_path/bin/pip"
+    elif [ -f "$env_path/bin/pip3" ]; then
+        pip_cmd="$env_path/bin/pip3"
+    elif [ -f "$env_path/Scripts/pip.exe" ]; then
+        pip_cmd="$env_path/Scripts/pip.exe"
+    else
+        # Try to use python -m pip
+        if "$python_bin" -m pip --version >/dev/null 2>&1; then
+            pip_cmd="$python_bin -m pip"
+        else
+            echo -e "${YELLOW}Warning: pip not found in environment${NC}"
+            echo -e "${YELLOW}Trying to use system pip with environment interpreter...${NC}"
+            
+            # Try to get packages by inspecting site-packages directory
+            local site_packages
+            site_packages=$("$python_bin" -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
+            if [ -n "$site_packages" ] && [ -d "$site_packages" ]; then
+                echo -e "\n${BLUE}Packages found in site-packages:${NC}"
+                echo "------------------------------"
+                ls -1 "$site_packages" | grep -v "\.dist-info$" | grep -v "\.egg-info$" | sort
+                return 0
+            else
+                echo -e "${RED}Error: Could not list packages${NC}"
+                return 1
+            fi
+        fi
+    fi
+    
+    # List packages with pip
+    if [ "$2" = "--tree" ] || [ "$2" = "-t" ]; then
+        # Show dependency tree if requested
+        if "$python_bin" -c "import pipdeptree" 2>/dev/null; then
+            "$python_bin" -m pipdeptree
+        else
+            echo -e "${YELLOW}pipdeptree not installed. Installing temporarily...${NC}"
+            "$python_bin" -m pip install --quiet pipdeptree
+            "$python_bin" -m pipdeptree
+            "$python_bin" -m pip uninstall --quiet --yes pipdeptree
+        fi
+    elif [ "$2" = "--outdated" ] || [ "$2" = "-o" ]; then
+        # Show outdated packages
+        $pip_cmd list --outdated
+    elif [ "$2" = "--freeze" ] || [ "$2" = "-f" ]; then
+        # Show in requirements format
+        $pip_cmd freeze
+    else
+        # Show normal package list
+        $pip_cmd list
+    fi
+    
+    # Show summary
+    local package_count
+    package_count=$($pip_cmd list --format=freeze 2>/dev/null | wc -l)
+    echo -e "\n${BLUE}Total packages: ${CYAN}$package_count${NC}"
 }
 
 # Internal function to activate a virtual environment by name or path
@@ -331,20 +475,28 @@ _pyenv_help() {
     echo "========================="
     echo ""
     echo "Available commands:"
-    echo "  pyenv list               - List all virtual environments (like 'conda env list')"
-    echo "  pyenv activate <env>     - Activate a virtual environment by name or path"
-    echo "  pyenv deactivate         - Deactivate current environment"
-    echo "  pyenv remove <env>       - Remove a virtual environment by name or path"
-    echo "  pyenv help               - Show this help message"
+    echo "  pyenv list                      - List all virtual environments (like 'conda env list')"
+    echo "  pyenv activate <env>            - Activate a virtual environment by name or path"
+    echo "  pyenv deactivate                - Deactivate current environment"
+    echo "  pyenv remove <env>              - Remove a virtual environment by name or path"
+    echo "  pyenv packages <env> [options]  - List packages in environment (without activating)"
+    echo "  pyenv pkgs <env> [options]      - Alias for packages command"
+    echo "  pyenv help                      - Show this help message"
+    echo ""
+    echo "Package list options:"
+    echo "  --tree, -t       Show dependency tree (requires pipdeptree)"
+    echo "  --outdated, -o   Show only outdated packages"
+    echo "  --freeze, -f     Show in requirements.txt format"
     echo ""
     echo "Examples:"
     echo "  pyenv list                          # List all environments"
     echo "  pyenv activate myenv               # Activate by name"
     echo "  pyenv activate ~/venvs/project     # Activate by path"
-    echo "  pyenv activate ./venv              # Activate by relative path"
+    echo "  pyenv packages myenv               # List packages in myenv"
+    echo "  pyenv packages myenv --tree        # Show dependency tree"
+    echo "  pyenv packages myenv --outdated    # Show outdated packages"
     echo "  pyenv deactivate                   # Deactivate current environment"
     echo "  pyenv remove oldenv                # Remove by name"
-    echo "  pyenv remove ~/venvs/oldenv        # Remove by path"
     echo ""
     echo "Configure search directories by editing the VENV_DIRS array at the top of this script."
     echo ""
@@ -365,4 +517,3 @@ _pyenv_init
 
 # Export the main function to make it available
 export -f pyenv
-

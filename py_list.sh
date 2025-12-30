@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Script: pyenv-manager.sh
+# Script: pyvenv-manager.sh
 # Description: List and manage Python virtual environments in specified directories
-# Usage: source pyenv-manager.sh
+# Usage: source pyvenv-manager.sh
 
 # Configuration - User can modify these paths
 VENV_DIRS=(
@@ -23,35 +23,42 @@ CYAN='\033[0;36m'
 PURPLE='\033[0;35m'
 NC='\033[0m' # No Color
 
-# Function to list all virtual environments
-pyenv() {
+# Main function
+pyvenv() {
     local command="$1"
     
     case "$command" in
-        list)
-            _pyenv_list
+        env)
+            # Handle pyvenv env list
+            if [ "$2" = "list" ]; then
+                _pyvenv_list
+            else
+                echo -e "${RED}Error: Unknown env subcommand '${2:-}'${NC}"
+                echo "Usage: pyvenv env list"
+                return 1
+            fi
             ;;
         activate)
-            _pyenv_activate "$2"
+            _pyvenv_activate "$2"
             ;;
         deactivate)
-            _pyenv_deactivate
+            _pyvenv_deactivate
             ;;
         remove)
-            _pyenv_remove "$2"
+            _pyvenv_remove "$2"
             ;;
         packages|pkgs)
-            _pyenv_packages "$2"
+            _pyvenv_packages "$2" "$3"
             ;;
         help|--help|-h)
-            _pyenv_help
+            _pyvenv_help
             ;;
         *)
             if [ -z "$command" ]; then
-                _pyenv_help
+                _pyvenv_help
             else
                 echo -e "${RED}Error: Unknown command '$command'${NC}"
-                echo "Type 'pyenv help' for available commands"
+                echo "Type 'pyvenv help' for available commands"
                 return 1
             fi
             ;;
@@ -59,7 +66,7 @@ pyenv() {
 }
 
 # Internal function to list all virtual environments in conda-style format
-_pyenv_list() {
+_pyvenv_list() {
     echo -e "${BLUE}# conda environments:${NC}"
     echo ""
     
@@ -140,15 +147,16 @@ _pyenv_list() {
 }
 
 # Internal function to list packages in a virtual environment without activating it
-_pyenv_packages() {
+_pyvenv_packages() {
     if [ -z "$1" ]; then
         echo -e "${RED}Error: Please specify environment name or path${NC}"
-        echo "Usage: pyenv packages <environment_name_or_path>"
-        echo "       pyenv pkgs <environment_name_or_path>"
+        echo "Usage: pyvenv packages <environment_name_or_path> [options]"
+        echo "       pyvenv pkgs <environment_name_or_path> [options]"
         return 1
     fi
     
     local target="$1"
+    local option="$2"
     local env_path=""
     local env_name=""
     
@@ -252,26 +260,31 @@ _pyenv_packages() {
     fi
     
     # List packages with pip
-    if [ "$2" = "--tree" ] || [ "$2" = "-t" ]; then
-        # Show dependency tree if requested
-        if "$python_bin" -c "import pipdeptree" 2>/dev/null; then
-            "$python_bin" -m pipdeptree
-        else
-            echo -e "${YELLOW}pipdeptree not installed. Installing temporarily...${NC}"
-            "$python_bin" -m pip install --quiet pipdeptree
-            "$python_bin" -m pipdeptree
-            "$python_bin" -m pip uninstall --quiet --yes pipdeptree
-        fi
-    elif [ "$2" = "--outdated" ] || [ "$2" = "-o" ]; then
-        # Show outdated packages
-        $pip_cmd list --outdated
-    elif [ "$2" = "--freeze" ] || [ "$2" = "-f" ]; then
-        # Show in requirements format
-        $pip_cmd freeze
-    else
-        # Show normal package list
-        $pip_cmd list
-    fi
+    case "$option" in
+        --tree|-t)
+            # Show dependency tree if requested
+            if "$python_bin" -c "import pipdeptree" 2>/dev/null; then
+                "$python_bin" -m pipdeptree
+            else
+                echo -e "${YELLOW}pipdeptree not installed. Installing temporarily...${NC}"
+                "$python_bin" -m pip install --quiet pipdeptree
+                "$python_bin" -m pipdeptree
+                "$python_bin" -m pip uninstall --quiet --yes pipdeptree
+            fi
+            ;;
+        --outdated|-o)
+            # Show outdated packages
+            $pip_cmd list --outdated
+            ;;
+        --freeze|-f)
+            # Show in requirements format
+            $pip_cmd freeze
+            ;;
+        *)
+            # Show normal package list
+            $pip_cmd list
+            ;;
+    esac
     
     # Show summary
     local package_count
@@ -280,10 +293,10 @@ _pyenv_packages() {
 }
 
 # Internal function to activate a virtual environment by name or path
-_pyenv_activate() {
+_pyvenv_activate() {
     if [ -z "$1" ]; then
         echo -e "${RED}Error: Please specify environment name or path${NC}"
-        echo "Usage: pyenv activate <environment_name_or_path>"
+        echo "Usage: pyvenv activate <environment_name_or_path>"
         return 1
     fi
     
@@ -333,7 +346,7 @@ _pyenv_activate() {
                 fi
             done
             echo -e "\n${YELLOW}You can also activate by providing the full path:${NC}"
-            echo "  pyenv activate /path/to/your/venv"
+            echo "  pyvenv activate /path/to/your/venv"
             return 1
         fi
     fi
@@ -371,7 +384,7 @@ _pyenv_activate() {
 }
 
 # Internal function to deactivate current environment
-_pyenv_deactivate() {
+_pyvenv_deactivate() {
     if [ -z "$VIRTUAL_ENV" ]; then
         echo -e "${YELLOW}No virtual environment is currently active${NC}"
         return 0
@@ -392,10 +405,10 @@ _pyenv_deactivate() {
 }
 
 # Internal function to remove a virtual environment
-_pyenv_remove() {
+_pyvenv_remove() {
     if [ -z "$1" ]; then
         echo -e "${RED}Error: Please specify environment name or path${NC}"
-        echo "Usage: pyenv remove <environment_name_or_path>"
+        echo "Usage: pyvenv remove <environment_name_or_path>"
         return 1
     fi
     
@@ -447,7 +460,7 @@ _pyenv_remove() {
     # Check if currently active
     if [ -n "$VIRTUAL_ENV" ] && [ "$(realpath "$VIRTUAL_ENV")" = "$(realpath "$env_path")" ]; then
         echo -e "${YELLOW}Warning: '$env_name' is currently active${NC}"
-        _pyenv_deactivate
+        _pyvenv_deactivate
     fi
     
     echo -e "${YELLOW}Removing environment: $env_name${NC}"
@@ -470,50 +483,50 @@ _pyenv_remove() {
 }
 
 # Internal function to show help
-_pyenv_help() {
-    echo -e "${BLUE}PyEnv Manager - Help${NC}"
-    echo "========================="
+_pyvenv_help() {
+    echo -e "${BLUE}PyVenv Manager - Help${NC}"
+    echo "=========================="
     echo ""
     echo "Available commands:"
-    echo "  pyenv list                      - List all virtual environments (like 'conda env list')"
-    echo "  pyenv activate <env>            - Activate a virtual environment by name or path"
-    echo "  pyenv deactivate                - Deactivate current environment"
-    echo "  pyenv remove <env>              - Remove a virtual environment by name or path"
-    echo "  pyenv packages <env> [options]  - List packages in environment (without activating)"
-    echo "  pyenv pkgs <env> [options]      - Alias for packages command"
-    echo "  pyenv help                      - Show this help message"
+    echo "  pyvenv env list                 - List all virtual environments (like 'conda env list')"
+    echo "  pyvenv activate <env>           - Activate a virtual environment by name or path"
+    echo "  pyvenv deactivate               - Deactivate current environment"
+    echo "  pyvenv remove <env>             - Remove a virtual environment by name or path"
+    echo "  pyvenv packages <env> [options] - List packages in environment (without activating)"
+    echo "  pyvenv pkgs <env> [options]     - Alias for packages command"
+    echo "  pyvenv help                     - Show this help message"
     echo ""
     echo "Package list options:"
-    echo "  --tree, -t       Show dependency tree (requires pipdeptree)"
+    echo "  --tree, -t       Show dependency tree"
     echo "  --outdated, -o   Show only outdated packages"
     echo "  --freeze, -f     Show in requirements.txt format"
     echo ""
     echo "Examples:"
-    echo "  pyenv list                          # List all environments"
-    echo "  pyenv activate myenv               # Activate by name"
-    echo "  pyenv activate ~/venvs/project     # Activate by path"
-    echo "  pyenv packages myenv               # List packages in myenv"
-    echo "  pyenv packages myenv --tree        # Show dependency tree"
-    echo "  pyenv packages myenv --outdated    # Show outdated packages"
-    echo "  pyenv deactivate                   # Deactivate current environment"
-    echo "  pyenv remove oldenv                # Remove by name"
+    echo "  pyvenv env list                      # List all environments"
+    echo "  pyvenv activate myenv               # Activate by name"
+    echo "  pyvenv activate ~/venvs/project     # Activate by path"
+    echo "  pyvenv packages myenv               # List packages in myenv"
+    echo "  pyvenv packages myenv --tree        # Show dependency tree"
+    echo "  pyvenv packages myenv --outdated    # Show outdated packages"
+    echo "  pyvenv deactivate                   # Deactivate current environment"
+    echo "  pyvenv remove oldenv                # Remove by name"
     echo ""
     echo "Configure search directories by editing the VENV_DIRS array at the top of this script."
     echo ""
     echo "Note: You must source this script to use the activation functions:"
-    echo "  source ./pyenv-manager.sh"
+    echo "  source ./pyvenv-manager.sh"
 }
 
 # Main function to initialize
-_pyenv_init() {
-    echo -e "${BLUE}PyEnv Manager Initialized${NC}"
-    echo "========================"
-    echo "Type 'pyenv help' for available commands"
+_pyvenv_init() {
+    echo -e "${BLUE}PyVenv Manager Initialized${NC}"
+    echo "=========================="
+    echo "Type 'pyvenv help' for available commands"
     echo ""
 }
 
 # Initialize on source
-_pyenv_init
+_pyvenv_init
 
 # Export the main function to make it available
-export -f pyenv
+export -f pyvenv

@@ -1007,6 +1007,391 @@ function removePrjEnv() {
     fi
 }
 
+############################################
+# Function: generateMetadata
+# Description: Generates metadata, requirements file, and backup for existing private/project venv
+# Usage: generateMetadata [environment_name]
+############################################
+function generateMetadata() {
+    echo -e "\nFunction to generate metadata and backup files for an existing private/project Python virtual environment\n"
+    
+    # Set directories
+    local pvt_envs_dirs="/nas/data/data/$USER/.pyvenv/envs"
+    local prj_envs_dirs="/nas/data/data/projects/pyvenv/envs"
+    local log_timestamp=$(date +%Y%m%d%H%M%S)
+    local logFile="$HOME/venv_metadata_${log_timestamp}.log"
+    
+    # Clear log file
+    > "$logFile"
+    
+    # Initialize variables
+    local vEName=""
+    local cfg_fl=0
+    
+    # Check if environment name was passed as argument
+    if [ $# -gt 0 ] && [ ! -z "$1" ]; then
+        vEName="$1"
+        cfg_fl=1
+        echo -e "Using environment name from argument: $vEName" | tee -a "$logFile"
+    fi
+    
+    # Get all available environments
+    local env_list=()
+    
+    # Get private environments
+    if [ -d "$pvt_envs_dirs" ]; then
+        for env in "$pvt_envs_dirs"/*; do
+            if [ -d "$env" ]; then
+                env_name=$(basename "$env")
+                env_list+=("$env_name")
+            fi
+        done
+    fi
+    
+    # Get project environments
+    if [ -d "$prj_envs_dirs" ]; then
+        for env in "$prj_envs_dirs"/*; do
+            if [ -d "$env" ]; then
+                env_name=$(basename "$env")
+                env_list+=("$env_name")
+            fi
+        done
+    fi
+    
+    # Sort and deduplicate
+    env_list=($(echo "${env_list[@]}" | tr ' ' '\n' | sort -u))
+    
+    # If no environment name provided via argument or cfg_fl is 0, prompt user
+    if [ $cfg_fl -eq 0 ] || [ -z "$vEName" ]; then
+        echo -e "Here is the list of all private & project virtual environments user- $USER can access:" | tee -a "$logFile"
+        
+        if [ ${#env_list[@]} -eq 0 ]; then
+            echo -e "No virtual environments found." | tee -a "$logFile"
+            return 1
+        fi
+        
+        # Display environments with numbers
+        for i in "${!env_list[@]}"; do
+            echo "$((i + 1)). ${env_list[$i]}" | tee -a "$logFile"
+        done
+        
+        echo -e "\n"
+        read -p "Please enter the Virtual Environment Name from the above list (or number): " user_input
+        
+        # Check if user entered a number
+        if [[ $user_input =~ ^[0-9]+$ ]]; then
+            if [ $user_input -gt 0 ] && [ $user_input -le ${#env_list[@]} ]; then
+                vEName="${env_list[$((user_input - 1))]}"
+            else
+                echo -e "\n✗ Error: Invalid number selection." | tee -a "$logFile"
+                return 1
+            fi
+        else
+            vEName="$user_input"
+        fi
+    fi
+    
+    # Validate environment name
+    if [ -z "$vEName" ]; then
+        echo -e "\nError: Environment name is empty" | tee -a "$logFile"
+        return 1
+    fi
+    
+    # Check if environment exists in the list
+    local env_exists=0
+    for env in "${env_list[@]}"; do
+        if [[ "$env" == "$vEName" ]]; then
+            env_exists=1
+            break
+        fi
+    done
+    
+    if [ $env_exists -eq 0 ]; then
+        echo -e "\nError: Environment '$vEName' not found in available environments." | tee -a "$logFile"
+        echo -e "Available environments: ${env_list[*]}" | tee -a "$logFile"
+        return 1
+    fi
+    
+    # Determine environment type and path
+    local prefix=$(echo "$vEName" | cut -f1 -d "_")
+    local vEPath=""
+    
+    case "$prefix" in
+        pvt)
+            vEPath="$pvt_envs_dirs"
+            env_type="Private"
+            ;;
+        prj)
+            vEPath="$prj_envs_dirs"
+            env_type="Project"
+            ;;
+        *)
+            # Try to determine by checking both directories
+            if [ -d "$pvt_envs_dirs/$vEName" ]; then
+                vEPath="$pvt_envs_dirs"
+                env_type="Private"
+                prefix="pvt"
+            elif [ -d "$prj_envs_dirs/$vEName" ]; then
+                vEPath="$prj_envs_dirs"
+                env_type="Project"
+                prefix="prj"
+            else
+                echo -e "\nError: Could not determine environment type for '$vEName'" | tee -a "$logFile"
+                return 1
+            fi
+            ;;
+    esac
+    
+    local full_env_path="$vEPath/$vEName"
+    
+    if [ ! -d "$full_env_path" ]; then
+        echo -e "\nError: Environment directory not found: $full_env_path" | tee -a "$logFile"
+        return 1
+    fi
+    
+    echo -e "\nGenerating metadata for environment: $vEName" | tee -a "$logFile"
+    echo -e "Environment path: $full_env_path" | tee -a "$logFile"
+    echo -e "Environment type: $env_type" | tee -a "$logFile"
+    
+    # Create metadata file
+    local metadata_file="$HOME/$vEName-metadata-${log_timestamp}.txt"
+    echo -e "\nGenerating metadata file: $metadata_file" | tee -a "$logFile"
+    
+    # Write basic metadata
+    {
+        echo "================================================"
+        echo "VIRTUAL ENVIRONMENT METADATA"
+        echo "================================================"
+        echo "Generated on: $(date)"
+        echo "Generated by: $USER"
+        echo ""
+        echo "ENVIRONMENT INFORMATION:"
+        echo "-----------------------"
+        echo "Virtual Environment Name: $vEName"
+        echo "Virtual Environment Type: $env_type"
+        echo "Virtual Environment Path: $full_env_path"
+        echo ""
+    } > "$metadata_file"
+    
+    # Get group information
+    if [ -d "$full_env_path" ]; then
+        local grpName=$(stat -c '%G' "$full_env_path" 2>/dev/null || echo "unknown")
+        local env_owner=$(stat -c '%U' "$full_env_path" 2>/dev/null || echo "unknown")
+        echo "Virtual Environment Owner: $env_owner" >> "$metadata_file"
+        echo "Virtual Environment Group: $grpName" >> "$metadata_file"
+        
+        # Get permissions
+        local permissions=$(stat -c '%A' "$full_env_path" 2>/dev/null || echo "unknown")
+        echo "Virtual Environment Permissions: $permissions" >> "$metadata_file"
+        
+        # Get size
+        local env_size=$(du -sh "$full_env_path" 2>/dev/null | cut -f1 || echo "unknown")
+        echo "Virtual Environment Size: $env_size" >> "$metadata_file"
+        echo "" >> "$metadata_file"
+    fi
+    
+    # Get Python version
+    echo "PYTHON INFORMATION:" >> "$metadata_file"
+    echo "------------------" >> "$metadata_file"
+    
+    local python_exec="$full_env_path/bin/python"
+    if [ -f "$python_exec" ]; then
+        echo -e "\nGetting Python version..." | tee -a "$logFile"
+        "$python_exec" --version >> "$metadata_file" 2>&1
+        
+        # Get Python path
+        echo "Python executable: $python_exec" >> "$metadata_file"
+        
+        # Get pip version
+        local pip_exec="$full_env_path/bin/pip"
+        if [ -f "$pip_exec" ]; then
+            "$pip_exec" --version >> "$metadata_file" 2>&1
+        fi
+    else
+        echo "Python executable not found in virtual environment" >> "$metadata_file"
+    fi
+    
+    echo "" >> "$metadata_file"
+    
+    # Generate requirements file
+    local requirements_file="$HOME/$vEName-requirements-${log_timestamp}.txt"
+    echo -e "\nGenerating requirements file: $requirements_file" | tee -a "$logFile"
+    
+    echo "PACKAGE INFORMATION:" >> "$metadata_file"
+    echo "-------------------" >> "$metadata_file"
+    
+    if [ -f "$pip_exec" ]; then
+        echo -e "\nGetting installed packages..." | tee -a "$logFile"
+        
+        # Get package list and save to requirements file
+        "$pip_exec" freeze > "$requirements_file" 2>&1
+        local pip_status=$?
+        
+        if [ $pip_status -eq 0 ]; then
+            echo "Packages exported to: $requirements_file" >> "$metadata_file"
+            echo "Total packages installed: $(wc -l < "$requirements_file")" >> "$metadata_file"
+            
+            # Add package summary to metadata file
+            echo "" >> "$metadata_file"
+            echo "PACKAGE SUMMARY:" >> "$metadata_file"
+            echo "---------------" >> "$metadata_file"
+            
+            # Count packages by type (if any special patterns)
+            local total_packages=$(wc -l < "$requirements_file")
+            echo "Total packages: $total_packages" >> "$metadata_file"
+            
+            # List first 20 packages as sample
+            echo "" >> "$metadata_file"
+            echo "Sample packages (first 20):" >> "$metadata_file"
+            head -20 "$requirements_file" >> "$metadata_file"
+            
+            if [ $total_packages -gt 20 ]; then
+                echo "..." >> "$metadata_file"
+                echo "(See $requirements_file for complete list)" >> "$metadata_file"
+            fi
+            
+            echo -e "✓ Successfully exported $total_packages packages to requirements file" | tee -a "$logFile"
+        else
+            echo "Failed to export packages list" >> "$metadata_file"
+            echo "Error: pip freeze command failed" >> "$metadata_file"
+            echo -e "⚠ Warning: Could not generate requirements file" | tee -a "$logFile"
+        fi
+    else
+        echo "pip not found in virtual environment" >> "$metadata_file"
+        echo -e "⚠ Warning: pip not found, skipping package export" | tee -a "$logFile"
+    fi
+    
+    echo "" >> "$metadata_file"
+    
+    # Generate environment structure info
+    echo "ENVIRONMENT STRUCTURE:" >> "$metadata_file"
+    echo "---------------------" >> "$metadata_file"
+    
+    # List main directories
+    echo "Directory structure (top level):" >> "$metadata_file"
+    find "$full_env_path" -maxdepth 2 -type d | sort | head -30 >> "$metadata_file" 2>/dev/null || echo "Could not list directory structure" >> "$metadata_file"
+    
+    echo "" >> "$metadata_file"
+    
+    # Check for common files
+    echo "Important files detected:" >> "$metadata_file"
+    local important_files=(
+        "$full_env_path/pyvenv.cfg"
+        "$full_env_path/bin/activate"
+        "$full_env_path/bin/pip"
+        "$full_env_path/bin/python"
+    )
+    
+    for file in "${important_files[@]}"; do
+        if [ -f "$file" ]; then
+            echo "  ✓ $(basename "$file")" >> "$metadata_file"
+        else
+            echo "  ✗ $(basename "$file") (not found)" >> "$metadata_file"
+        fi
+    done
+    
+    echo "" >> "$metadata_file"
+    
+    # Generate backup file
+    local backup_file="$HOME/$vEName-backup-${log_timestamp}.tar.gz"
+    echo -e "\nGenerating backup file: $backup_file" | tee -a "$logFile"
+    
+    # Create tar.gz backup (excluding large cache directories)
+    echo "BACKUP INFORMATION:" >> "$metadata_file"
+    echo "------------------" >> "$metadata_file"
+    
+    # Try to create backup
+    if tar --exclude="__pycache__" --exclude="*.pyc" --exclude="*.pyo" \
+         -czf "$backup_file" -C "$vEPath" "$vEName" 2>/dev/null; then
+        local backup_size=$(du -h "$backup_file" | cut -f1)
+        echo "Backup file created: $backup_file" >> "$metadata_file"
+        echo "Backup size: $backup_size" >> "$metadata_file"
+        echo "Backup contents: $vEName directory (excluding cache files)" >> "$metadata_file"
+        echo -e "✓ Successfully created backup file: $backup_file ($backup_size)" | tee -a "$logFile"
+    else
+        echo "Failed to create backup file" >> "$metadata_file"
+        echo "Error: tar command failed" >> "$metadata_file"
+        echo -e "⚠ Warning: Could not create backup file" | tee -a "$logFile"
+    fi
+    
+    # Add checksum for verification
+    echo "" >> "$metadata_file"
+    echo "FILE VERIFICATION:" >> "$metadata_file"
+    echo "-----------------" >> "$metadata_file"
+    
+    if [ -f "$backup_file" ]; then
+        local checksum=$(md5sum "$backup_file" | cut -d' ' -f1)
+        echo "Backup MD5 checksum: $checksum" >> "$metadata_file"
+    fi
+    
+    if [ -f "$requirements_file" ]; then
+        local req_checksum=$(md5sum "$requirements_file" | cut -d' ' -f1)
+        echo "Requirements file MD5 checksum: $req_checksum" >> "$metadata_file"
+    fi
+    
+    # Final summary
+    echo "" >> "$metadata_file"
+    echo "================================================" >> "$metadata_file"
+    echo "GENERATION COMPLETE" >> "$metadata_file"
+    echo "================================================" >> "$metadata_file"
+    echo "Generated files:" >> "$metadata_file"
+    echo "  1. $metadata_file (this file)" >> "$metadata_file"
+    
+    if [ -f "$requirements_file" ]; then
+        echo "  2. $requirements_file (package list)" >> "$metadata_file"
+    fi
+    
+    if [ -f "$backup_file" ]; then
+        echo "  3. $backup_file (environment backup)" >> "$metadata_file"
+    fi
+    
+    echo "" >> "$metadata_file"
+    echo "RECREATION INSTRUCTIONS:" >> "$metadata_file"
+    echo "-----------------------" >> "$metadata_file"
+    echo "To recreate this environment:" >> "$metadata_file"
+    echo "1. Extract backup: tar -xzf $backup_file -C /desired/path" >> "$metadata_file"
+    
+    if [ -f "$requirements_file" ]; then
+        echo "2. Create new venv: python -m venv new_env_name" >> "$metadata_file"
+        echo "3. Activate: source new_env_name/bin/activate" >> "$metadata_file"
+        echo "4. Install packages: pip install -r $requirements_file" >> "$metadata_file"
+    fi
+    
+    echo "" >> "$metadata_file"
+    echo "Note: Python version used: $(grep 'Python' "$metadata_file" | head -1)" >> "$metadata_file"
+    
+    # Display final summary to user
+    echo -e "\n✅ METADATA GENERATION COMPLETE" | tee -a "$logFile"
+    echo -e "=========================================" | tee -a "$logFile"
+    echo -e "Environment: $vEName ($env_type)" | tee -a "$logFile"
+    echo -e "Generated files in your HOME directory:" | tee -a "$logFile"
+    echo -e "  1. Metadata: $(basename "$metadata_file")" | tee -a "$logFile"
+    
+    if [ -f "$requirements_file" ]; then
+        local pkg_count=$(wc -l < "$requirements_file")
+        echo -e "  2. Requirements: $(basename "$requirements_file") ($pkg_count packages)" | tee -a "$logFile"
+    fi
+    
+    if [ -f "$backup_file" ]; then
+        local backup_size=$(du -h "$backup_file" | cut -f1)
+        echo -e "  3. Backup: $(basename "$backup_file") ($backup_size)" | tee -a "$logFile"
+    fi
+    
+    echo -e "\nLog file: $logFile" | tee -a "$logFile"
+    echo -e "\nTo recreate this environment elsewhere:" | tee -a "$logFile"
+    
+    if [ -f "$requirements_file" ]; then
+        echo -e "  1. Create new venv with same Python version" | tee -a "$logFile"
+        echo -e "  2. Activate and run: pip install -r $requirements_file" | tee -a "$logFile"
+    fi
+    
+    if [ -f "$backup_file" ]; then
+        echo -e "  OR extract backup: tar -xzf $backup_file -C /desired/path" | tee -a "$logFile"
+    fi
+    
+    echo -e "\n✓ All files have been generated successfully.\n" | tee -a "$logFile"
+}
+
 # Call the function
 # createPvtEnv
 # createSpecPvtEnv

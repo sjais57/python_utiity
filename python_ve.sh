@@ -344,9 +344,177 @@ function createSpecPvtEnv() {
         echo -e "\n✗ Error: Private VE name 'pvt_${pvtVEName}' already exists. Please try a different name.\n"
     fi
 }
+
 ############################################
-# Function: createSpecPrjEnv
+# Function: createPrjEnv
+# Description: Creates a project environment without requirements file
+# Similar to createSpecPrjEnv but without spec file requirement
 ############################################
+function createPrjEnv() {
+    echo -e "\nFunction to create User Project Python Virtual Environment (without requirements file)\n"
+
+    # Set project environment directory
+    declare prj_venv_dirs="/nas/data/data/projects/pyvenv/envs"
+
+    # Reset variables
+    local prjVEName=""
+    local pyVersion=""
+    local default_packages=""
+    local dfltPkg=""
+    local grpName=""
+    
+    read -p "Please enter the project Virtual Environment Name you wish to create. Note: it will be prefixed by 'prj_' : " prjVEName
+    prjVEName=$(echo "$prjVEName" | tr '[:upper:]' '[:lower:]")
+    
+    # Validate environment name
+    if [ -z "$prjVEName" ]; then
+        echo -e "\nError: The project virtual environment name cannot be empty."
+        exit 1
+    fi
+    
+    echo -e "\n"
+    read -p "Please enter the Python version to use (Default to 3.10.12 if not specified): " pyVersion
+
+    # Validate Python version
+    if [ -z "$pyVersion" ]; then
+        pyVersion="3.10.12"
+    fi
+    
+    # Use the reusable function to select Python version
+    echo -e "\nChecking Python version availability..."
+    selected_version=$(selectPythonVersion "$pyVersion")
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
+    pyVersion="$selected_version"
+    
+    echo -e "\nSelected Python version: $pyVersion\n"
+    
+    # FIXED: Corrected Python executable path (removed /exec from path)
+    pyExec="/efs/dist/python/core/${pyVersion}/bin/python3"
+    
+    # Prompt for optional default packages
+    read -p "Please enter specific packages to be installed (optional, comma-separated). Ex: numpy,pandas,matplotlib: " default_packages
+    
+    if [ ! -z "$default_packages" ]; then
+        dfltPkg=$(echo "$default_packages" | tr "," " ")
+    fi
+    
+    echo -e "\n"
+    read -p "Please enter the group Name which will own the Virtual Environment $prjVEName: " grpName
+    echo -e "\n"
+
+    # Check if env already exists
+    ls "$prj_venv_dirs" | tr " " "\n" | grep -Eq "^prj_${prjVEName}$"
+    st_available_prj_envs=$?
+
+    # Check if group exists
+    getent group "$grpName" | grep -oq "$grpName"
+    st_grp=$?
+
+    if [ $st_grp -ne 0 ]; then
+        echo -e "\n✗ Error: Group '$grpName' does not exist. Please provide a valid group name.\n"
+        return 1
+    else
+        if [ ! -z "$prjVEName" ] && [ $st_available_prj_envs -ne 0 ]; then
+            prjVEName="prj_${prjVEName}"
+            
+            echo -e "\nCreating project Python Virtual Environment '$prjVEName'\n"
+            echo -e "Using Python: $pyExec\n"
+            echo -e "Group owner: $grpName\n"
+            
+            if [ ! -z "$dfltPkg" ]; then
+                echo -e "Packages to install: $dfltPkg\n"
+            else
+                echo -e "No additional packages specified (only base packages will be installed).\n"
+            fi
+
+            # Create virtual environment
+            $pyExec -m venv "$prj_venv_dirs/$prjVEName"
+            if [ $? -ne 0 ]; then
+                echo -e "\n✗ Failed to create Python virtual environment."
+                return 1
+            fi
+
+            echo -e "✓ Virtual environment created: $prj_venv_dirs/$prjVEName\n"
+            
+            # Install packages if specified
+            if [ ! -z "$dfltPkg" ]; then
+                echo -e "Activating environment and installing packages...\n"
+                source "$prj_venv_dirs/$prjVEName/bin/activate"
+
+                echo -e "=== Installing packages ===\n"
+                
+                # Install packages and capture status
+                pip install $dfltPkg
+                pip_status=$?
+                
+                if [ $pip_status -eq 0 ]; then
+                    echo -e "\n✓ All packages installed successfully.\n"
+                else
+                    echo -e "\n⚠ Package installation completed with errors (exit code: $pip_status)."
+                    echo -e "The environment was created, but some packages may not be installed correctly."
+                    echo -e "Check the error messages above for problematic packages.\n"
+                fi
+                
+                deactivate
+            else
+                echo -e "✓ Base virtual environment created (no additional packages installed).\n"
+            fi
+
+            # Set group ownership and permissions
+            echo -e "\nSetting group ownership and permissions...\n"
+            
+            echo -e "Changing group ownership to: $grpName"
+            chgrp -R "$grpName" "$prj_venv_dirs/$prjVEName"
+            
+            echo -e "Setting group read permissions..."
+            chmod -R g+r "$prj_venv_dirs/$prjVEName"
+            
+            echo -e "Setting group write permissions..."
+            chmod -R g+w "$prj_venv_dirs/$prjVEName"
+            
+            echo -e "Setting setgid bit on directories..."
+            find "$prj_venv_dirs/$prjVEName" -type d -exec chmod g+s {} \;
+            
+            echo -e "Setting execute permissions..."
+            chmod -R ug+x "$prj_venv_dirs/$prjVEName/bin" 2>/dev/null || true
+            
+            echo -e "\n✓ Permissions set successfully.\n"
+
+            echo -e "\n✅ Summary:\n"
+            echo -e "✓ Virtual environment: $prjVEName"
+            echo -e "✓ Location: $prj_venv_dirs/$prjVEName"
+            echo -e "✓ Python version: $pyVersion"
+            echo -e "✓ Group owner: $grpName"
+            
+            if [ ! -z "$dfltPkg" ]; then
+                if [ $pip_status -eq 0 ]; then
+                    echo -e "✓ Packages: Successfully installed: $dfltPkg"
+                else
+                    echo -e "⚠ Packages: Some packages failed to install (see errors above)"
+                fi
+            else
+                echo -e "✓ Packages: Base environment only (pip, setuptools, wheel)"
+            fi
+            
+            echo -e "\n Commands:"
+            echo -e "  To activate:   source $prj_venv_dirs/$prjVEName/bin/activate"
+            echo -e "  To deactivate: deactivate"
+            echo -e "\n Permissions:"
+            echo -e "  - Group '$grpName' has read/write access"
+            echo -e "  - New files will inherit group ownership"
+            echo -e "\n"
+
+        elif [ -z "$prjVEName" ]; then
+            echo -e "\n✗ Error: Empty project VE Name\n"
+
+        elif [ $st_available_prj_envs -eq 0 ]; then
+            echo -e "\n✗ Error: Project VE name 'prj_${prjVEName}' already exists. Please try a different name.\n"
+        fi
+    fi
+}
+
 ############################################
 # Function: createSpecPrjEnv
 ############################################
@@ -363,7 +531,7 @@ function createSpecPrjEnv() {
     local grpName=""
     
     read -p "Please enter the project Virtual Environment Name you wish to create. Note: it will be prefixed by 'prj_' : " prjVEName
-    prjVEName=$(echo "$prjVEName" | tr '[:upper:]' '[:lower:]')
+    prjVEName=$(echo "$prjVEName" | tr '[:upper:]' '[:lower:]")
     
     # Validate environment name
     if [ -z "$prjVEName" ]; then
@@ -513,7 +681,336 @@ function createSpecPrjEnv() {
     fi
 }
 
+############################################
+# Function: removePvtEnv
+# Description: Removes a user's private virtual environment
+# Usage: removePvtEnv
+############################################
+function removePvtEnv() {
+    echo -e "\nFunction to remove User private Python Virtual Environment\n"
+    
+    # Reset variables
+    local env_name=""
+    local full_env_name=""
+    local confirm=""
+    
+    # List available private environments
+    echo -e "Available private virtual environments:\n"
+    
+    local env_count=0
+    local env_list=()
+    
+    if [ -d "$pvt_venv_dirs" ]; then
+        # Get all environments that start with 'pvt_'
+        for env in "$pvt_venv_dirs"/*; do
+            if [ -d "$env" ]; then
+                env_name=$(basename "$env")
+                env_list+=("$env_name")
+                ((env_count++))
+            fi
+        done
+    fi
+    
+    if [ $env_count -eq 0 ]; then
+        echo -e "No private virtual environments found in: $pvt_venv_dirs\n"
+        return 0
+    fi
+    
+    # Display environments with numbers
+    for i in "${!env_list[@]}"; do
+        echo "$((i + 1)). ${env_list[$i]}"
+    done
+    
+    echo -e "\n"
+    
+    # Prompt user for environment to remove
+    read -p "Enter the environment name or number to remove (or 'q' to quit): " env_input
+    
+    if [[ "$env_input" == "q" || "$env_input" == "Q" ]]; then
+        echo -e "\nOperation cancelled.\n"
+        return 0
+    fi
+    
+    # Determine environment name
+    if [[ $env_input =~ ^[0-9]+$ ]]; then
+        # User entered a number
+        if [ $env_input -gt 0 ] && [ $env_input -le ${#env_list[@]} ]; then
+            env_name="${env_list[$((env_input - 1))]}"
+        else
+            echo -e "\n✗ Error: Invalid number. Please enter a number between 1 and ${#env_list[@]}.\n"
+            return 1
+        fi
+    else
+        # User entered a name
+        env_name="$env_input"
+        
+        # Check if environment exists
+        if [ ! -d "$pvt_venv_dirs/$env_name" ]; then
+            # Try adding pvt_ prefix if not already present
+            if [[ ! "$env_name" =~ ^pvt_ ]]; then
+                env_name="pvt_$env_name"
+            fi
+            
+            if [ ! -d "$pvt_venv_dirs/$env_name" ]; then
+                echo -e "\n✗ Error: Environment '$env_name' does not exist.\n"
+                return 1
+            fi
+        fi
+    fi
+    
+    full_env_name="$env_name"
+    
+    # Display environment info
+    echo -e "\nEnvironment to be removed:"
+    echo -e "  Name: $full_env_name"
+    echo -e "  Path: $pvt_venv_dirs/$full_env_name"
+    
+    # Show size of environment
+    if [ -d "$pvt_venv_dirs/$full_env_name" ]; then
+        env_size=$(du -sh "$pvt_venv_dirs/$full_env_name" 2>/dev/null | cut -f1)
+        echo -e "  Size: $env_size"
+    fi
+    
+    echo -e "\n⚠ WARNING: This action cannot be undone!"
+    echo -e "All packages and data in this virtual environment will be permanently deleted.\n"
+    
+    # Confirm deletion
+    read -p "Are you sure you want to remove '$full_env_name'? (yes/NO): " confirm
+    
+    if [[ "$confirm" != "yes" && "$confirm" != "YES" && "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo -e "\n✗ Operation cancelled. Environment '$full_env_name' was NOT removed.\n"
+        return 0
+    fi
+    
+    # Double confirmation for safety
+    echo -e "\n⚠ Final warning: This will permanently delete '$full_env_name'."
+    read -p "Type 'DELETE' to confirm removal: " final_confirm
+    
+    if [[ "$final_confirm" != "DELETE" ]]; then
+        echo -e "\n✗ Operation cancelled. Environment '$full_env_name' was NOT removed.\n"
+        return 0
+    fi
+    
+    # Remove the environment
+    echo -e "\nRemoving environment '$full_env_name'...\n"
+    
+    if rm -rf "$pvt_venv_dirs/$full_env_name"; then
+        echo -e "✓ Successfully removed private virtual environment: $full_env_name\n"
+        
+        # Verify removal
+        if [ ! -d "$pvt_venv_dirs/$full_env_name" ]; then
+            echo -e "✓ Verification: Environment '$full_env_name' has been completely removed.\n"
+        else
+            echo -e "⚠ Warning: Some files may still exist. Please check manually.\n"
+        fi
+    else
+        echo -e "\n✗ Error: Failed to remove environment '$full_env_name'."
+        echo -e "You may need to check permissions or remove it manually.\n"
+        return 1
+    fi
+}
+
+############################################
+# Function: removePrjEnv
+# Description: Removes a project virtual environment
+# Usage: removePrjEnv
+############################################
+function removePrjEnv() {
+    echo -e "\nFunction to remove Project Python Virtual Environment\n"
+    
+    # Set project environment directory
+    declare prj_venv_dirs="/nas/data/data/projects/pyvenv/envs"
+    
+    # Reset variables
+    local env_name=""
+    local full_env_name=""
+    local confirm=""
+    local current_user=$(whoami)
+    
+    # Check if user has permission to access project environments
+    if [ ! -d "$prj_venv_dirs" ]; then
+        echo -e "\n✗ Error: Project virtual environment directory not found:"
+        echo -e "  $prj_venv_dirs\n"
+        return 1
+    fi
+    
+    # Check if user can read the directory
+    if [ ! -r "$prj_venv_dirs" ]; then
+        echo -e "\n✗ Error: You don't have permission to read project environments."
+        echo -e "  Contact your system administrator.\n"
+        return 1
+    fi
+    
+    # List available project environments
+    echo -e "Available project virtual environments:\n"
+    
+    local env_count=0
+    local env_list=()
+    
+    # Get all environments that start with 'prj_'
+    for env in "$prj_venv_dirs"/*; do
+        if [ -d "$env" ]; then
+            env_name=$(basename "$env")
+            
+            # Check if user has permission to remove this environment
+            # (User needs write permission on the directory or be in the owning group)
+            if [ -w "$env" ] || [ "$(stat -c '%G' "$env")" == "$(id -gn "$current_user")" ]; then
+                env_list+=("$env_name")
+                ((env_count++))
+            else
+                echo -e "  $env_name (no write permission)"
+            fi
+        fi
+    done
+    
+    if [ $env_count -eq 0 ]; then
+        echo -e "No project virtual environments found that you have permission to remove.\n"
+        echo -e "Note: You need write permission or group membership to remove project environments.\n"
+        return 0
+    fi
+    
+    # Display environments with numbers
+    for i in "${!env_list[@]}"; do
+        # Get environment info
+        env_path="$prj_venv_dirs/${env_list[$i]}"
+        env_group=$(stat -c '%G' "$env_path" 2>/dev/null || echo "unknown")
+        env_owner=$(stat -c '%U' "$env_path" 2>/dev/null || echo "unknown")
+        
+        echo "$((i + 1)). ${env_list[$i]} (Group: $env_group, Owner: $env_owner)"
+    done
+    
+    echo -e "\n"
+    
+    # Prompt user for environment to remove
+    read -p "Enter the environment name or number to remove (or 'q' to quit): " env_input
+    
+    if [[ "$env_input" == "q" || "$env_input" == "Q" ]]; then
+        echo -e "\nOperation cancelled.\n"
+        return 0
+    fi
+    
+    # Determine environment name
+    if [[ $env_input =~ ^[0-9]+$ ]]; then
+        # User entered a number
+        if [ $env_input -gt 0 ] && [ $env_input -le ${#env_list[@]} ]; then
+            env_name="${env_list[$((env_input - 1))]}"
+        else
+            echo -e "\n✗ Error: Invalid number. Please enter a number between 1 and ${#env_list[@]}.\n"
+            return 1
+        fi
+    else
+        # User entered a name
+        env_name="$env_input"
+        
+        # Check if environment exists
+        if [ ! -d "$prj_venv_dirs/$env_name" ]; then
+            # Try adding prj_ prefix if not already present
+            if [[ ! "$env_name" =~ ^prj_ ]]; then
+                env_name="prj_$env_name"
+            fi
+            
+            if [ ! -d "$prj_venv_dirs/$env_name" ]; then
+                echo -e "\n✗ Error: Environment '$env_name' does not exist.\n"
+                return 1
+            fi
+        fi
+        
+        # Check if user has permission to remove this environment
+        env_path="$prj_venv_dirs/$env_name"
+        if [ ! -w "$env_path" ] && [ "$(stat -c '%G' "$env_path")" != "$(id -gn "$current_user")" ]; then
+            echo -e "\n✗ Error: You don't have permission to remove '$env_name'."
+            echo -e "  You need write permission or be a member of the owning group.\n"
+            return 1
+        fi
+    fi
+    
+    full_env_name="$env_name"
+    env_path="$prj_venv_dirs/$full_env_name"
+    
+    # Display environment info
+    echo -e "\nEnvironment to be removed:"
+    echo -e "  Name: $full_env_name"
+    echo -e "  Path: $env_path"
+    
+    # Get environment details
+    env_group=$(stat -c '%G' "$env_path" 2>/dev/null || echo "unknown")
+    env_owner=$(stat -c '%U' "$env_path" 2>/dev/null || echo "unknown")
+    echo -e "  Group: $env_group"
+    echo -e "  Owner: $env_owner"
+    
+    # Show size of environment
+    if [ -d "$env_path" ]; then
+        env_size=$(du -sh "$env_path" 2>/dev/null | cut -f1)
+        echo -e "  Size: $env_size"
+    fi
+    
+    # Check if environment is currently active
+    if [[ "$VIRTUAL_ENV" == "$env_path" ]]; then
+        echo -e "\n⚠ WARNING: This environment is currently active!"
+        echo -e "  You are currently using: $VIRTUAL_ENV"
+        echo -e "  Please deactivate before removing.\n"
+        return 1
+    fi
+    
+    echo -e "\n⚠ WARNING: This action cannot be undone!"
+    echo -e "All packages and data in this project environment will be permanently deleted.\n"
+    
+    # Confirm deletion
+    read -p "Are you sure you want to remove '$full_env_name'? (yes/NO): " confirm
+    
+    if [[ "$confirm" != "yes" && "$confirm" != "YES" && "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo -e "\n✗ Operation cancelled. Environment '$full_env_name' was NOT removed.\n"
+        return 0
+    fi
+    
+    # Double confirmation for safety
+    echo -e "\n⚠ Final warning: This will permanently delete the project environment '$full_env_name'."
+    read -p "Type 'DELETE-PROJECT' to confirm removal: " final_confirm
+    
+    if [[ "$final_confirm" != "DELETE-PROJECT" ]]; then
+        echo -e "\n✗ Operation cancelled. Environment '$full_env_name' was NOT removed.\n"
+        return 0
+    fi
+    
+    # Remove the environment
+    echo -e "\nRemoving project environment '$full_env_name'...\n"
+    
+    # Try to remove with sudo if needed (but only if user is in the group)
+    if rm -rf "$env_path"; then
+        echo -e "✓ Successfully removed project virtual environment: $full_env_name\n"
+        
+        # Verify removal
+        if [ ! -d "$env_path" ]; then
+            echo -e "✓ Verification: Environment '$full_env_name' has been completely removed.\n"
+            
+            # Suggest to notify team members if this was a shared environment
+            if [[ "$env_group" != "$current_user" && "$env_group" != "unknown" ]]; then
+                echo -e "⚠ Note: This was a shared environment owned by group '$env_group'."
+                echo -e "  You may want to notify other team members about this removal.\n"
+            fi
+        else
+            echo -e "⚠ Warning: Some files may still exist. You may need administrator help.\n"
+            return 1
+        fi
+    else
+        echo -e "\n✗ Error: Failed to remove environment '$full_env_name'."
+        echo -e "Possible reasons:"
+        echo -e "  1. Insufficient permissions (try with sudo if you're in the correct group)"
+        echo -e "  2. Files are in use by another process"
+        echo -e "  3. Directory is mounted or has special permissions\n"
+        
+        # Suggest alternative command
+        echo -e "You can try removing it manually with appropriate permissions:"
+        echo -e "  sudo rm -rf '$env_path'\n"
+        echo -e "Or contact your system administrator.\n"
+        return 1
+    fi
+}
+
 # Call the function
 # createPvtEnv
 # createSpecPvtEnv
+# createPrjEnv
 # createSpecPrjEnv
+# removePvtEnv
+# removePrjEnv

@@ -24,17 +24,17 @@ PURPLE='\033[0;35m'
 NC='\033[0m' # No Color
 
 # Main function
-pyvenv() {
+py() {
     local command="$1"
     
     case "$command" in
         env)
-            # Handle pyvenv env list
+            # Handle py env list
             if [ "$2" = "list" ]; then
                 _pyvenv_list
             else
                 echo -e "${RED}Error: Unknown env subcommand '${2:-}'${NC}"
-                echo "Usage: pyvenv env list"
+                echo "Usage: py env list"
                 return 1
             fi
             ;;
@@ -58,12 +58,71 @@ pyvenv() {
                 _pyvenv_help
             else
                 echo -e "${RED}Error: Unknown command '$command'${NC}"
-                echo "Type 'pyvenv help' for available commands"
+                echo "Type 'py help' for available commands"
                 return 1
             fi
             ;;
     esac
 }
+
+# Tab completion function
+_py_completion() {
+    local cur prev words cword
+    _init_completion || return
+
+    case ${cword} in
+        1)
+            # Main commands
+            COMPREPLY=($(compgen -W "env activate deactivate remove packages pkgs help --help -h" -- "$cur"))
+            ;;
+        2)
+            # Subcommands for specific main commands
+            case ${prev} in
+                env)
+                    COMPREPLY=($(compgen -W "list" -- "$cur"))
+                    ;;
+                activate|remove|packages|pkgs)
+                    # Get list of virtual environments
+                    local envs=()
+                    
+                    # Collect all environments from all directories
+                    for dir in "${VENV_DIRS[@]}"; do
+                        if [ -d "$dir" ]; then
+                            for item in "$dir"/*; do
+                                if [ -d "$item" ]; then
+                                    if [ -f "$item/bin/activate" ] || [ -f "$item/pyvenv.cfg" ]; then
+                                        envs+=("$(basename "$item")")
+                                    fi
+                                fi
+                            done
+                        fi
+                    done
+                    
+                    # Also check for virtual environments directly in current directory structure
+                    if [ -d "./venv" ] && { [ -f "./venv/bin/activate" ] || [ -f "./venv/pyvenv.cfg" ]; }; then
+                        envs+=("venv")
+                    fi
+                    
+                    COMPREPLY=($(compgen -W "${envs[*]}" -- "$cur"))
+                    
+                    # Also allow path completion
+                    _filedir -d
+                    ;;
+            esac
+            ;;
+        3)
+            # Options for packages/pkgs command
+            case ${words[1]} in
+                packages|pkgs)
+                    COMPREPLY=($(compgen -W "--tree -t --outdated -o --freeze -f" -- "$cur"))
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+# Register the completion function
+complete -F _py_completion py
 
 # Internal function to list all virtual environments in conda-style format
 _pyvenv_list() {
@@ -150,8 +209,8 @@ _pyvenv_list() {
 _pyvenv_packages() {
     if [ -z "$1" ]; then
         echo -e "${RED}Error: Please specify environment name or path${NC}"
-        echo "Usage: pyvenv packages <environment_name_or_path> [options]"
-        echo "       pyvenv pkgs <environment_name_or_path> [options]"
+        echo "Usage: py packages <environment_name_or_path> [options]"
+        echo "       py pkgs <environment_name_or_path> [options]"
         return 1
     fi
     
@@ -296,7 +355,7 @@ _pyvenv_packages() {
 _pyvenv_activate() {
     if [ -z "$1" ]; then
         echo -e "${RED}Error: Please specify environment name or path${NC}"
-        echo "Usage: pyvenv activate <environment_name_or_path>"
+        echo "Usage: py activate <environment_name_or_path>"
         return 1
     fi
     
@@ -346,7 +405,7 @@ _pyvenv_activate() {
                 fi
             done
             echo -e "\n${YELLOW}You can also activate by providing the full path:${NC}"
-            echo "  pyvenv activate /path/to/your/venv"
+            echo "  py activate /path/to/your/venv"
             return 1
         fi
     fi
@@ -408,7 +467,7 @@ _pyvenv_deactivate() {
 _pyvenv_remove() {
     if [ -z "$1" ]; then
         echo -e "${RED}Error: Please specify environment name or path${NC}"
-        echo "Usage: pyvenv remove <environment_name_or_path>"
+        echo "Usage: py remove <environment_name_or_path>"
         return 1
     fi
     
@@ -488,13 +547,13 @@ _pyvenv_help() {
     echo "=========================="
     echo ""
     echo "Available commands:"
-    echo "  pyvenv env list                 - List all virtual environments (like 'conda env list')"
-    echo "  pyvenv activate <env>           - Activate a virtual environment by name or path"
-    echo "  pyvenv deactivate               - Deactivate current environment"
-    echo "  pyvenv remove <env>             - Remove a virtual environment by name or path"
-    echo "  pyvenv packages <env> [options] - List packages in environment (without activating)"
-    echo "  pyvenv pkgs <env> [options]     - Alias for packages command"
-    echo "  pyvenv help                     - Show this help message"
+    echo "  py env list                 - List all virtual environments (like 'conda env list')"
+    echo "  py activate <env>           - Activate a virtual environment by name or path"
+    echo "  py deactivate               - Deactivate current environment"
+    echo "  py remove <env>             - Remove a virtual environment by name or path"
+    echo "  py packages <env> [options] - List packages in environment (without activating)"
+    echo "  py pkgs <env> [options]     - Alias for packages command"
+    echo "  py help                     - Show this help message"
     echo ""
     echo "Package list options:"
     echo "  --tree, -t       Show dependency tree"
@@ -502,14 +561,14 @@ _pyvenv_help() {
     echo "  --freeze, -f     Show in requirements.txt format"
     echo ""
     echo "Examples:"
-    echo "  pyvenv env list                      # List all environments"
-    echo "  pyvenv activate myenv               # Activate by name"
-    echo "  pyvenv activate ~/venvs/project     # Activate by path"
-    echo "  pyvenv packages myenv               # List packages in myenv"
-    echo "  pyvenv packages myenv --tree        # Show dependency tree"
-    echo "  pyvenv packages myenv --outdated    # Show outdated packages"
-    echo "  pyvenv deactivate                   # Deactivate current environment"
-    echo "  pyvenv remove oldenv                # Remove by name"
+    echo "  py env list                      # List all environments"
+    echo "  py activate myenv               # Activate by name"
+    echo "  py activate ~/venvs/project     # Activate by path"
+    echo "  py packages myenv               # List packages in myenv"
+    echo "  py packages myenv --tree        # Show dependency tree"
+    echo "  py packages myenv --outdated    # Show outdated packages"
+    echo "  py deactivate                   # Deactivate current environment"
+    echo "  py remove oldenv                # Remove by name"
     echo ""
     echo "Configure search directories by editing the VENV_DIRS array at the top of this script."
     echo ""
@@ -521,7 +580,7 @@ _pyvenv_help() {
 _pyvenv_init() {
     echo -e "${BLUE}PyVenv Manager Initialized${NC}"
     echo "=========================="
-    echo "Type 'pyvenv help' for available commands"
+    echo "Type 'py help' for available commands"
     echo ""
 }
 
@@ -529,4 +588,4 @@ _pyvenv_init() {
 _pyvenv_init
 
 # Export the main function to make it available
-export -f pyvenv
+export -f py
